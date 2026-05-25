@@ -201,15 +201,22 @@ async def aceptar(
 
     try:
         from app.comunicacion.models import Notificacion
+        from app.comunicacion.websocket import notify
         eta_txt = f"{eta_final} minutos" if eta_final else "por determinar"
+        notif_titulo = "Solicitud aceptada"
+        notif_msg = f"Un taller aceptó tu emergencia. Tiempo estimado de llegada: {eta_txt}."
         db.add(Notificacion(
             usuario_id=incidente.usuario_id,
-            titulo="Solicitud aceptada",
-            mensaje=f"Un taller aceptó tu emergencia. Tiempo estimado de llegada: {eta_txt}.",
+            titulo=notif_titulo,
+            mensaje=notif_msg,
             tipo="asignacion",
             referencia_id=incidente_id,
         ))
         await db.commit()
+        await notify(incidente.usuario_id, "notificacion", {
+            "titulo": notif_titulo, "mensaje": notif_msg,
+            "tipo": "asignacion", "referencia_id": incidente_id,
+        })
     except Exception:
         pass
 
@@ -382,15 +389,22 @@ async def rechazar(
 
     try:
         from app.comunicacion.models import Notificacion
+        from app.comunicacion.websocket import notify
         if incidente:
+            notif_titulo = "Taller rechazó tu solicitud"
+            notif_msg = "Un taller rechazó tu emergencia. El sistema buscará otro taller disponible."
             db.add(Notificacion(
                 usuario_id=incidente.usuario_id,
-                titulo="Taller rechazó tu solicitud",
-                mensaje="Un taller rechazó tu emergencia. El sistema buscará otro taller disponible.",
+                titulo=notif_titulo,
+                mensaje=notif_msg,
                 tipo="asignacion",
                 referencia_id=solicitud_id,
             ))
             await db.commit()
+            await notify(incidente.usuario_id, "notificacion", {
+                "titulo": notif_titulo, "mensaje": notif_msg,
+                "tipo": "asignacion", "referencia_id": solicitud_id,
+            })
     except Exception:
         pass
 

@@ -31,6 +31,29 @@ async def actualizar_ubicacion_tecnico(
     tecnico.longitud = data.longitud
     tecnico.ultima_actualizacion = datetime.now(timezone.utc)
     await db.commit()
+
+    # CU37 — Broadcast ubicación a clientes de asignaciones activas
+    try:
+        from app.comunicacion.websocket import notify
+        estados_activos = ("aceptado", "en_camino", "en_sitio", "en_reparacion")
+        asig_res = await db.execute(
+            select(Asignacion.id, Asignacion.incidente_id)
+            .where(Asignacion.tecnico_id == tecnico.id, Asignacion.estado.in_(estados_activos))
+        )
+        for asig_id, inc_id in asig_res.all():
+            inc_res = await db.execute(select(Incidente.usuario_id).where(Incidente.id == inc_id))
+            cliente_id = inc_res.scalar_one_or_none()
+            if cliente_id:
+                await notify(cliente_id, "ubicacion_tecnico", {
+                    "asignacion_id": asig_id,
+                    "tecnico_id": tecnico.id,
+                    "nombre": tecnico.nombre,
+                    "latitud": data.latitud,
+                    "longitud": data.longitud,
+                })
+    except Exception:
+        pass
+
     return {"ok": True}
 
 
@@ -78,6 +101,30 @@ async def obtener_ubicacion_tecnico(
         estado_asignacion=asignacion.estado,
         eta=asignacion.eta,
     )
+
+
+# ── Helpers ───────────────────────────────────────────────────
+
+async def _obtener_participantes_chat(
+    asignacion: Asignacion, sender_id: int, db: AsyncSession
+) -> list[int]:
+    """Devuelve IDs de todos los participantes del chat EXCEPTO el remitente."""
+    ids: set[int] = set()
+    inc_res = await db.execute(select(Incidente.usuario_id).where(Incidente.id == asignacion.incidente_id))
+    cliente_id = inc_res.scalar_one_or_none()
+    if cliente_id:
+        ids.add(cliente_id)
+    taller_res = await db.execute(select(Taller.usuario_id).where(Taller.id == asignacion.taller_id))
+    taller_uid = taller_res.scalar_one_or_none()
+    if taller_uid:
+        ids.add(taller_uid)
+    if asignacion.tecnico_id:
+        tec_res = await db.execute(select(Tecnico.usuario_id).where(Tecnico.id == asignacion.tecnico_id))
+        tec_uid = tec_res.scalar_one_or_none()
+        if tec_uid:
+            ids.add(tec_uid)
+    ids.discard(sender_id)
+    return list(ids)
 
 
 # ── CU18 · Chat ───────────────────────────────────────────────
@@ -134,7 +181,7 @@ async def enviar_mensaje(
     res_u = await db.execute(select(User).where(User.id == user_id))
     user = res_u.scalar_one()
 
-    return MensajeResponse(
+    response = MensajeResponse(
         id=mensaje.id,
         asignacion_id=mensaje.asignacion_id,
         usuario_id=mensaje.usuario_id,
@@ -143,6 +190,12 @@ async def enviar_mensaje(
         contenido=mensaje.contenido,
         created_at=mensaje.created_at,
     )
+
+    dest_ids = await _obtener_participantes_chat(asignacion, user_id, db)
+    from app.comunicacion.websocket import notify_many
+    await notify_many(dest_ids, "nuevo_mensaje", response.model_dump(mode="json"))
+
+    return response
 
 
 async def listar_mensajes(

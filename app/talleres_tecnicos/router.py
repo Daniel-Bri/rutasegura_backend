@@ -116,6 +116,7 @@ async def actualizar_estado_asignacion(
 
     try:
         from app.comunicacion.models import Notificacion
+        from app.comunicacion.websocket import notify
         from app.emergencias.models import Incidente
         inc_r = await db.execute(select(Incidente).where(Incidente.id == asignacion.incidente_id))
         inc = inc_r.scalar_one_or_none()
@@ -128,14 +129,22 @@ async def actualizar_estado_asignacion(
                 "cancelado":     "El servicio fue cancelado",
             }
             titulo = etiquetas.get(data.estado, f"Estado actualizado: {data.estado}")
+            notif_msg = f"Estado de tu emergencia #{inc.id}: {data.estado}."
             db.add(Notificacion(
                 usuario_id=inc.usuario_id,
                 titulo=titulo,
-                mensaje=f"Estado de tu emergencia #{inc.id}: {data.estado}.",
+                mensaje=notif_msg,
                 tipo="estado",
                 referencia_id=inc.id,
             ))
             await db.commit()
+            await notify(inc.usuario_id, "notificacion", {
+                "titulo": titulo, "mensaje": notif_msg,
+                "tipo": "estado", "referencia_id": inc.id,
+            })
+            await notify(inc.usuario_id, "estado_asignacion", {
+                "asignacion_id": asignacion.id, "estado": data.estado,
+            })
     except Exception:
         pass
 

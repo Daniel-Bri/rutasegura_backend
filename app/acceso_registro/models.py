@@ -1,7 +1,19 @@
-from sqlalchemy import Boolean, Column, Integer, String, DateTime, Float, ForeignKey
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, Float, ForeignKey, Text
 from sqlalchemy.sql import func
 from app.db.base import Base
 from datetime import datetime, timezone
+
+
+class Tenant(Base):
+    __tablename__ = "tenants"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    nombre      = Column(String(200), nullable=False)
+    slug        = Column(String(100), unique=True, index=True, nullable=False)
+    descripcion = Column(String(500), nullable=True)
+    activo      = Column(Boolean, default=True)
+    config      = Column(Text, nullable=True)   # JSON: límites, branding, etc.
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class User(Base):
@@ -14,7 +26,8 @@ class User(Base):
     telefono = Column(String(20), nullable=True)
     hashed_password = Column(String(255), nullable=False)
     is_active = Column(Boolean, default=True)
-    role = Column(String(20), nullable=False, default="cliente")  # cliente | taller | tecnico | admin
+    role = Column(String(20), nullable=False, default="cliente")
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -46,6 +59,7 @@ class Taller(Base):
     disponible = Column(Boolean, default=False)
     estado = Column(String(20), default="pendiente")  # pendiente | aprobado | rechazado
     rating = Column(Float, default=0.0)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

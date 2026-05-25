@@ -4,11 +4,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi import HTTPException
+from sqlalchemy import select, update
 from app.db.session import get_db
 from app.acceso_registro import schemas, service
 from app.acceso_registro.schemas import UserResponse, VehiculoResponse, TallerResponse, UserListResponse
 from app.core.dependencies import get_current_user, require_role
-from app.acceso_registro.models import User
+from app.acceso_registro.models import User, Tenant, Taller
 
 router = APIRouter()
 
@@ -227,3 +229,159 @@ async def rechazar_taller(
                      usuario_nombre=current_user.username, entidad="Taller", entidad_id=taller_id,
                      ip=request.client.host if request.client else None)
     return TallerResponse.model_validate(taller)
+
+
+# ── CU42 - Gestionar Tenants ──────────────────────────────
+
+@router.post("/tenants", response_model=schemas.TenantResponse, status_code=status.HTTP_201_CREATED)
+async def crear_tenant(
+    data: schemas.TenantCreate,
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    existe = await db.execute(select(Tenant).where(Tenant.slug == data.slug))
+    if existe.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Ya existe un tenant con ese slug")
+    tenant = Tenant(
+        nombre=data.nombre,
+        slug=data.slug,
+        descripcion=data.descripcion,
+        config=data.config,
+    )
+    db.add(tenant)
+    await db.commit()
+    await db.refresh(tenant)
+    return schemas.TenantResponse.model_validate(tenant)
+
+
+@router.get("/tenants", response_model=list[schemas.TenantResponse])
+async def listar_tenants(
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Tenant).order_by(Tenant.id))
+    return [schemas.TenantResponse.model_validate(t) for t in result.scalars().all()]
+
+
+@router.get("/tenants/{tenant_id}", response_model=schemas.TenantDetalle)
+async def detalle_tenant(
+    tenant_id: int,
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant no encontrado")
+
+    usuarios_r = await db.execute(select(User).where(User.tenant_id == tenant_id))
+    talleres_r = await db.execute(select(Taller).where(Taller.tenant_id == tenant_id))
+
+    detalle = schemas.TenantDetalle.model_validate(tenant)
+    detalle.usuarios = [schemas.UserResponse.model_validate(u) for u in usuarios_r.scalars().all()]
+    detalle.talleres = [schemas.TallerResponse.model_validate(t) for t in talleres_r.scalars().all()]
+    return detalle
+
+
+@router.patch("/tenants/{tenant_id}", response_model=schemas.TenantResponse)
+async def actualizar_tenant(
+    tenant_id: int,
+    data: schemas.TenantUpdate,
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant no encontrado")
+    for field, value in data.model_dump(exclude_none=True).items():
+        setattr(tenant, field, value)
+    await db.commit()
+    await db.refresh(tenant)
+    return schemas.TenantResponse.model_validate(tenant)
+
+
+@router.delete("/tenants/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def desactivar_tenant(
+    tenant_id: int,
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant no encontrado")
+    if tenant.slug == "default":
+        raise HTTPException(status_code=400, detail="No se puede eliminar el tenant por defecto")
+    tenant.activo = False
+    await db.commit()
+
+
+@router.post("/tenants/{tenant_id}/usuarios", response_model=schemas.UserResponse)
+async def asignar_usuario_tenant(
+    tenant_id: int,
+    data: schemas.AsignarUsuarioRequest,
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_r = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    if not tenant_r.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Tenant no encontrado")
+    user_r = await db.execute(select(User).where(User.id == data.usuario_id))
+    user = user_r.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    user.tenant_id = tenant_id
+    await db.commit()
+    await db.refresh(user)
+    return schemas.UserResponse.model_validate(user)
+
+
+@router.delete("/tenants/{tenant_id}/usuarios/{usuario_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remover_usuario_tenant(
+    tenant_id: int,
+    usuario_id: int,
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    user_r = await db.execute(select(User).where(User.id == usuario_id, User.tenant_id == tenant_id))
+    user = user_r.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no pertenece a este tenant")
+    user.tenant_id = None
+    await db.commit()
+
+
+@router.post("/tenants/{tenant_id}/talleres", response_model=schemas.TallerResponse)
+async def asignar_taller_tenant(
+    tenant_id: int,
+    data: schemas.AsignarTallerRequest,
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_r = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    if not tenant_r.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Tenant no encontrado")
+    taller_r = await db.execute(select(Taller).where(Taller.id == data.taller_id))
+    taller = taller_r.scalar_one_or_none()
+    if not taller:
+        raise HTTPException(status_code=404, detail="Taller no encontrado")
+    taller.tenant_id = tenant_id
+    await db.commit()
+    await db.refresh(taller)
+    return schemas.TallerResponse.model_validate(taller)
+
+
+@router.delete("/tenants/{tenant_id}/talleres/{taller_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remover_taller_tenant(
+    tenant_id: int,
+    taller_id: int,
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    taller_r = await db.execute(select(Taller).where(Taller.id == taller_id, Taller.tenant_id == tenant_id))
+    taller = taller_r.scalar_one_or_none()
+    if not taller:
+        raise HTTPException(status_code=404, detail="Taller no pertenece a este tenant")
+    taller.tenant_id = None
+    await db.commit()
