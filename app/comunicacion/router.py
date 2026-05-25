@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.acceso_registro.models import User
 from app.comunicacion import schemas, service
+from app.comunicacion.models import Notificacion
 from app.core.dependencies import get_current_user, require_role
 from app.db.session import get_db
 
@@ -61,7 +63,62 @@ async def listar_mensajes(
     return await service.listar_mensajes(asignacion_id, current_user.id, current_user.role, db)
 
 
-# ── CU22 · Recibir notificaciones (stub) ──────────────────────
+# ── CU19 · Listar notificaciones ──────────────────────────────
 @router.get("/notificaciones")
-async def notificaciones():
-    return {"msg": "CU22 - notificaciones"}
+async def listar_notificaciones(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Notificacion)
+        .where(Notificacion.usuario_id == current_user.id)
+        .order_by(Notificacion.created_at.desc())
+        .limit(50)
+    )
+    notificaciones = result.scalars().all()
+    return [
+        {
+            "id": n.id,
+            "titulo": n.titulo,
+            "mensaje": n.mensaje,
+            "tipo": n.tipo,
+            "leida": n.leida,
+            "referencia_id": n.referencia_id,
+            "created_at": n.created_at.isoformat() if n.created_at else None,
+        }
+        for n in notificaciones
+    ]
+
+
+@router.patch("/notificaciones/{notificacion_id}/leer")
+async def marcar_leida(
+    notificacion_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Notificacion).where(
+            Notificacion.id == notificacion_id,
+            Notificacion.usuario_id == current_user.id,
+        )
+    )
+    notif = result.scalar_one_or_none()
+    if not notif:
+        raise HTTPException(status_code=404, detail="Notificación no encontrada")
+    notif.leida = True
+    await db.commit()
+    return {"ok": True}
+
+
+@router.patch("/notificaciones/leer-todas")
+async def marcar_todas_leidas(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await db.execute(
+        update(Notificacion)
+        .where(Notificacion.usuario_id == current_user.id, Notificacion.leida.is_(False))
+        .values(leida=True)
+    )
+    await db.commit()
+    return {"ok": True}

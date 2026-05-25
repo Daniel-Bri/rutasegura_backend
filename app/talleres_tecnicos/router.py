@@ -113,6 +113,32 @@ async def actualizar_estado_asignacion(
     asignacion = await service.actualizar_estado_asignacion(
         asignacion_id, current_user.id, current_user.role, data, db
     )
+
+    try:
+        from app.comunicacion.models import Notificacion
+        from app.emergencias.models import Incidente
+        inc_r = await db.execute(select(Incidente).where(Incidente.id == asignacion.incidente_id))
+        inc = inc_r.scalar_one_or_none()
+        if inc:
+            etiquetas = {
+                "en_camino":     "El técnico está en camino",
+                "en_sitio":      "El técnico llegó a tu ubicación",
+                "en_reparacion": "El técnico está atendiendo tu vehículo",
+                "finalizado":    "Tu servicio fue completado exitosamente",
+                "cancelado":     "El servicio fue cancelado",
+            }
+            titulo = etiquetas.get(data.estado, f"Estado actualizado: {data.estado}")
+            db.add(Notificacion(
+                usuario_id=inc.usuario_id,
+                titulo=titulo,
+                mensaje=f"Estado de tu emergencia #{inc.id}: {data.estado}.",
+                tipo="estado",
+                referencia_id=inc.id,
+            ))
+            await db.commit()
+    except Exception:
+        pass
+
     return schemas.AsignacionResponse.model_validate(asignacion)
 
 

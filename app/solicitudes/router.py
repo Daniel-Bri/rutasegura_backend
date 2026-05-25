@@ -199,6 +199,20 @@ async def aceptar(
     await db.flush()
     await db.commit()
 
+    try:
+        from app.comunicacion.models import Notificacion
+        eta_txt = f"{eta_final} minutos" if eta_final else "por determinar"
+        db.add(Notificacion(
+            usuario_id=incidente.usuario_id,
+            titulo="Solicitud aceptada",
+            mensaje=f"Un taller aceptó tu emergencia. Tiempo estimado de llegada: {eta_txt}.",
+            tipo="asignacion",
+            referencia_id=incidente_id,
+        ))
+        await db.commit()
+    except Exception:
+        pass
+
     return AsignacionResponse(
         id=asignacion.id,
         incidente_id=asignacion.incidente_id,
@@ -240,8 +254,59 @@ async def detalle(
 
 # ── CU10 – Ver estado de solicitud ───────────────────────────────────────
 @router.get("/{solicitud_id}/estado")
-async def ver_estado(solicitud_id: int):
-    return {"msg": f"CU10 - estado solicitud {solicitud_id}"}
+async def ver_estado(
+    solicitud_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Incidente)
+        .options(undefer(Incidente.tipo_incidente))
+        .where(Incidente.id == solicitud_id)
+    )
+    incidente = result.scalar_one_or_none()
+    if not incidente:
+        raise HTTPException(status_code=404, detail="Incidente no encontrado")
+
+    if current_user.role == "cliente" and incidente.usuario_id != current_user.id:
+        raise HTTPException(status_code=403, detail="No tienes acceso a este incidente")
+
+    asig_result = await db.execute(
+        select(Asignacion)
+        .where(
+            Asignacion.incidente_id == solicitud_id,
+            Asignacion.estado.notin_(["cancelado"]),
+        )
+        .order_by(Asignacion.created_at.desc())
+    )
+    asignacion = asig_result.scalar_one_or_none()
+
+    taller_info = None
+    if asignacion:
+        from app.acceso_registro.models import Taller
+        tal_res = await db.execute(select(Taller).where(Taller.id == asignacion.taller_id))
+        taller = tal_res.scalar_one_or_none()
+        if taller:
+            taller_info = {
+                "id": taller.id,
+                "nombre": taller.nombre,
+                "telefono": taller.telefono,
+                "direccion": taller.direccion,
+            }
+
+    return {
+        "incidente_id": incidente.id,
+        "estado_incidente": incidente.estado,
+        "prioridad": incidente.prioridad,
+        "tipo_incidente": incidente.tipo_incidente,
+        "asignacion": {
+            "id": asignacion.id,
+            "estado": asignacion.estado,
+            "eta": asignacion.eta,
+            "tecnico_id": asignacion.tecnico_id,
+        } if asignacion else None,
+        "taller": taller_info,
+    }
 
 
 # ── CU11 – Cancelar solicitud (cliente) ──────────────────────────────────
@@ -314,6 +379,21 @@ async def rechazar(
         incidente.estado = "pendiente"
 
     await db.commit()
+
+    try:
+        from app.comunicacion.models import Notificacion
+        if incidente:
+            db.add(Notificacion(
+                usuario_id=incidente.usuario_id,
+                titulo="Taller rechazó tu solicitud",
+                mensaje="Un taller rechazó tu emergencia. El sistema buscará otro taller disponible.",
+                tipo="asignacion",
+                referencia_id=solicitud_id,
+            ))
+            await db.commit()
+    except Exception:
+        pass
+
     return {
         "asignacion_id": asignacion.id,
         "incidente_id":  solicitud_id,
