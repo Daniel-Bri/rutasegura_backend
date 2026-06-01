@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from fastapi import HTTPException, status
 
-from app.acceso_registro.models import User, Vehiculo, Taller, PasswordResetCode
+from app.acceso_registro.models import User, Vehiculo, Taller, Tenant, PasswordResetCode
 from app.acceso_registro.schemas import UserCreate, UserLogin, VehiculoCreate, TallerCreate, UserUpdate
 from app.core.security import hash_password, verify_password, create_access_token
 
@@ -45,6 +45,12 @@ async def iniciar_sesion(data: UserLogin, db: AsyncSession) -> tuple[str, User]:
 
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Cuenta desactivada")
+
+    if user.tenant_id:
+        result_t = await db.execute(select(Tenant).where(Tenant.id == user.tenant_id))
+        tenant = result_t.scalar_one_or_none()
+        if tenant and not tenant.activo:
+            raise HTTPException(status_code=403, detail="Tu organización está desactivada. Contacta al administrador.")
 
     token = create_access_token({"sub": str(user.id), "email": user.email, "role": user.role})
     return token, user

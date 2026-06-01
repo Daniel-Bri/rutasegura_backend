@@ -195,6 +195,63 @@ class UserListResponse(BaseModel):
     pages: int
 
 
+# ── CU42 - Tenants ────────────────────────────────────────
+class TenantCreate(BaseModel):
+    nombre: str
+    slug: str
+    descripcion: Optional[str] = None
+    config: Optional[str] = None
+
+    @field_validator("slug")
+    @classmethod
+    def slug_valido(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not re.match(r"^[a-z0-9_-]+$", v):
+            raise ValueError("El slug solo puede contener letras minúsculas, números, - y _")
+        if len(v) < 2:
+            raise ValueError("El slug debe tener al menos 2 caracteres")
+        return v
+
+    @field_validator("nombre")
+    @classmethod
+    def nombre_valido(cls, v: str) -> str:
+        if len(v.strip()) < 2:
+            raise ValueError("El nombre debe tener al menos 2 caracteres")
+        return v.strip()
+
+
+class TenantUpdate(BaseModel):
+    nombre: Optional[str] = None
+    descripcion: Optional[str] = None
+    activo: Optional[bool] = None
+    config: Optional[str] = None
+
+
+class TenantResponse(BaseModel):
+    id: int
+    nombre: str
+    slug: str
+    descripcion: Optional[str]
+    activo: bool
+    config: Optional[str]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TenantDetalle(TenantResponse):
+    usuarios: list[UserResponse] = []
+    talleres: list["TallerResponse"] = []
+
+
+class AsignarUsuarioRequest(BaseModel):
+    usuario_id: int
+
+
+class AsignarTallerRequest(BaseModel):
+    taller_id: int
+
+
 # ── CU32 - Recordatorios de mantenimiento ─────────────────
 class RecordatorioMantenimiento(BaseModel):
     vehiculo_id: int

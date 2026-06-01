@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_token
-from app.acceso_registro.models import User
+from app.acceso_registro.models import User, Tenant
 from app.db.session import get_db
 
 bearer_scheme = HTTPBearer()
@@ -68,3 +68,14 @@ def require_role(*roles: str) -> Callable:
 
         return SimpleNamespace(id=int(user_id), role=role)
     return checker
+
+
+async def get_tenant_actual(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Tenant | None:
+    """Devuelve el tenant del usuario autenticado, o None si no tiene tenant asignado."""
+    if current_user.tenant_id is None:
+        return None
+    result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+    return result.scalar_one_or_none()

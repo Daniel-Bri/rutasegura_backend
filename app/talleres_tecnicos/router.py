@@ -116,29 +116,36 @@ async def actualizar_estado_asignacion(
     )
 
     try:
-        from app.notificaciones.service import notificar_usuario
-        from app.emergencias.models import Incidente as _Inc
-        inc_r = await db.execute(
-            select(_Inc.usuario_id).where(_Inc.id == asignacion.incidente_id)
-        )
-        inc_row = inc_r.first()
-        if inc_row:
-            _MENSAJES = {
-                "en_camino":     ("🚗 Técnico en camino",     "El técnico está en camino a tu ubicación"),
-                "en_sitio":      ("📍 Técnico llegó",         "El técnico llegó a tu ubicación"),
-                "en_reparacion": ("🔧 Reparación en curso",   "Tu vehículo está siendo reparado"),
-                "finalizado":    ("✅ Servicio completado",   "El servicio fue completado exitosamente"),
-                "cancelado":     ("❌ Servicio cancelado",    "La asignación fue cancelada"),
+        from app.comunicacion.models import Notificacion
+        from app.comunicacion.websocket import notify
+        from app.emergencias.models import Incidente
+        inc_r = await db.execute(select(Incidente).where(Incidente.id == asignacion.incidente_id))
+        inc = inc_r.scalar_one_or_none()
+        if inc:
+            etiquetas = {
+                "en_camino":     "El técnico está en camino",
+                "en_sitio":      "El técnico llegó a tu ubicación",
+                "en_reparacion": "El técnico está atendiendo tu vehículo",
+                "finalizado":    "Tu servicio fue completado exitosamente",
+                "cancelado":     "El servicio fue cancelado",
             }
-            titulo, cuerpo = _MENSAJES.get(
-                data.estado,
-                ("📋 Estado actualizado", f"Tu solicitud cambió a: {data.estado}")
-            )
-            await notificar_usuario(
-                inc_row[0], titulo, cuerpo, db,
-                {"tipo": "estado_actualizado", "estado": data.estado,
-                 "asignacion_id": str(asignacion_id)},
-            )
+            titulo = etiquetas.get(data.estado, f"Estado actualizado: {data.estado}")
+            notif_msg = f"Estado de tu emergencia #{inc.id}: {data.estado}."
+            db.add(Notificacion(
+                usuario_id=inc.usuario_id,
+                titulo=titulo,
+                mensaje=notif_msg,
+                tipo="estado",
+                referencia_id=inc.id,
+            ))
+            await db.commit()
+            await notify(inc.usuario_id, "notificacion", {
+                "titulo": titulo, "mensaje": notif_msg,
+                "tipo": "estado", "referencia_id": inc.id,
+            })
+            await notify(inc.usuario_id, "estado_asignacion", {
+                "asignacion_id": asignacion.id, "estado": data.estado,
+            })
     except Exception:
         pass
 
