@@ -202,6 +202,7 @@ async def aceptar(
     try:
         from app.comunicacion.models import Notificacion
         from app.comunicacion.websocket import notify
+        from app.notificaciones.service import notificar_usuario
         eta_txt = f"{eta_final} minutos" if eta_final else "por determinar"
         notif_titulo = "Solicitud aceptada"
         notif_msg = f"Un taller aceptó tu emergencia. Tiempo estimado de llegada: {eta_txt}."
@@ -217,6 +218,10 @@ async def aceptar(
             "titulo": notif_titulo, "mensaje": notif_msg,
             "tipo": "asignacion", "referencia_id": incidente_id,
         })
+        await notificar_usuario(
+            incidente.usuario_id, notif_titulo, notif_msg, db,
+            {"tipo": "asignacion", "incidente_id": str(incidente_id)},
+        )
     except Exception:
         pass
 
@@ -409,6 +414,7 @@ async def rechazar(
     try:
         from app.comunicacion.models import Notificacion
         from app.comunicacion.websocket import notify
+        from app.notificaciones.service import notificar_usuario
         if incidente:
             notif_titulo = "Taller rechazó tu solicitud"
             notif_msg = "Un taller rechazó tu emergencia. El sistema buscará otro taller disponible."
@@ -424,6 +430,10 @@ async def rechazar(
                 "titulo": notif_titulo, "mensaje": notif_msg,
                 "tipo": "asignacion", "referencia_id": solicitud_id,
             })
+            await notificar_usuario(
+                incidente.usuario_id, notif_titulo, notif_msg, db,
+                {"tipo": "asignacion", "incidente_id": str(solicitud_id)},
+            )
     except Exception:
         pass
 

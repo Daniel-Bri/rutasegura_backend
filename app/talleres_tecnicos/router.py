@@ -118,6 +118,7 @@ async def actualizar_estado_asignacion(
     try:
         from app.comunicacion.models import Notificacion
         from app.comunicacion.websocket import notify
+        from app.notificaciones.service import notificar_usuario
         from app.emergencias.models import Incidente
         inc_r = await db.execute(select(Incidente).where(Incidente.id == asignacion.incidente_id))
         inc = inc_r.scalar_one_or_none()
@@ -146,6 +147,10 @@ async def actualizar_estado_asignacion(
             await notify(inc.usuario_id, "estado_asignacion", {
                 "asignacion_id": asignacion.id, "estado": data.estado,
             })
+            await notificar_usuario(
+                inc.usuario_id, titulo, notif_msg, db,
+                {"tipo": "estado", "estado": data.estado, "asignacion_id": str(asignacion_id)},
+            )
     except Exception:
         pass
 
