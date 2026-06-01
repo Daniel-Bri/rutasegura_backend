@@ -47,7 +47,11 @@ def _init_firebase():
         return None
 
 
-def _enviar_push(token: str, titulo: str, cuerpo: str, data: dict | None = None) -> bool:
+_TOKENS_INVALIDOS = {"not-registered", "requested entity was not found"}
+
+
+def _enviar_push(token: str, titulo: str, cuerpo: str, data: dict | None = None) -> bool | None:
+    """Retorna True si éxito, False si error recuperable, None si token inválido."""
     try:
         from firebase_admin import messaging
         if _init_firebase() is None:
@@ -65,6 +69,10 @@ def _enviar_push(token: str, titulo: str, cuerpo: str, data: dict | None = None)
         messaging.send(msg)
         return True
     except Exception as exc:
+        msg_lower = str(exc).lower()
+        if any(inv in msg_lower for inv in _TOKENS_INVALIDOS):
+            logger.warning(f"Token inválido/stale eliminado (…{token[-10:]}): {exc}")
+            return None  # señal para borrar el token
         logger.warning(f"Push no enviada (token …{token[-10:]}): {exc}")
         return False
 
@@ -77,13 +85,23 @@ async def notificar_usuario(
     data: dict | None = None,
 ) -> None:
     """Envía push a todos los dispositivos registrados de un usuario.
-    Nunca lanza excepción — los errores se loguean y se ignoran."""
+    Elimina automáticamente los tokens inválidos o stale."""
     try:
+        from sqlalchemy import delete as sa_delete
         from app.notificaciones.models import DispositivoToken
         result = await db.execute(
-            select(DispositivoToken.token).where(DispositivoToken.user_id == user_id)
+            select(DispositivoToken).where(DispositivoToken.user_id == user_id)
         )
-        for (token,) in result.all():
-            _enviar_push(token, titulo, cuerpo, data)
+        tokens_invalidos: list[int] = []
+        for dispositivo in result.scalars().all():
+            resultado = _enviar_push(dispositivo.token, titulo, cuerpo, data)
+            if resultado is None:
+                tokens_invalidos.append(dispositivo.id)
+
+        if tokens_invalidos:
+            await db.execute(
+                sa_delete(DispositivoToken).where(DispositivoToken.id.in_(tokens_invalidos))
+            )
+            await db.commit()
     except Exception as exc:
         logger.warning(f"notificar_usuario({user_id}): {exc}")
