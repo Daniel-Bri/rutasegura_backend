@@ -37,6 +37,19 @@ class Asignacion(Base):
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class CobroVisita(Base):
+    """Cobro por desplazamiento cuando el técnico llegó pero no realizó el servicio
+    (el cliente canceló estando en_sitio, o el vehículo tenía seguro y el seguro cubrió)."""
+    __tablename__ = "cobros_visita"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    asignacion_id = Column(Integer, ForeignKey("asignaciones.id"), nullable=False, unique=True)
+    tecnico_id    = Column(Integer, ForeignKey("tecnicos.id"), nullable=True)
+    monto         = Column(Float, nullable=False)
+    concepto      = Column(String(500), nullable=True)
+    created_at    = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class ServicioRealizado(Base):
     __tablename__ = "servicios_realizados"
 

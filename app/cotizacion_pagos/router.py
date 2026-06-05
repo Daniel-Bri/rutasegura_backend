@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -70,8 +71,22 @@ async def mis_cotizaciones(
     current_user: User = Depends(require_role("cliente")),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.talleres_tecnicos.models import Asignacion
     cotizaciones = await service.listar_mis_cotizaciones(current_user.id, db)
-    return [schemas.CotizacionResponse.model_validate(c) for c in cotizaciones]
+    # Adjuntar estado_asignacion para que el cliente sepa si el servicio ya terminó
+    result = []
+    for c in cotizaciones:
+        asig_res = await db.execute(
+            select(Asignacion)
+            .where(Asignacion.incidente_id == c.incidente_id,
+                   Asignacion.taller_id == c.taller_id)
+            .order_by(Asignacion.created_at.desc())
+        )
+        asig = asig_res.scalars().first()
+        r = schemas.CotizacionResponse.model_validate(c)
+        r.estado_asignacion = asig.estado if asig else None
+        result.append(r)
+    return result
 
 
 # ── CU20 · Ver cotización por ID ───────────────────────────
@@ -142,3 +157,26 @@ async def ver_comisiones(
     from app.talleres_tecnicos.service import get_taller_by_user
     taller = await get_taller_by_user(current_user.id, db)
     return await service.listar_comisiones(taller.id, db)
+
+
+# ── CU40 · Crear PaymentIntent Stripe ─────────────────────
+@router.post("/stripe/intent", response_model=schemas.StripeIntentResponse)
+async def crear_stripe_intent(
+    data: schemas.StripeIntentRequest,
+    current_user: User = Depends(require_role("cliente")),
+    db: AsyncSession = Depends(get_db),
+):
+    return await service.crear_payment_intent(current_user.id, data.cotizacion_id, db)
+
+
+# ── CU40 · Confirmar pago Stripe ──────────────────────────
+@router.post("/stripe/confirmar", response_model=schemas.PagoResponse)
+async def confirmar_stripe(
+    data: schemas.StripeConfirmarRequest,
+    current_user: User = Depends(require_role("cliente")),
+    db: AsyncSession = Depends(get_db),
+):
+    pago = await service.confirmar_pago_stripe(
+        current_user.id, data.cotizacion_id, data.payment_intent_id, db
+    )
+    return schemas.PagoResponse.model_validate(pago)

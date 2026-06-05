@@ -64,6 +64,19 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE talleres ADD COLUMN IF NOT EXISTS tenant_id INTEGER REFERENCES tenants(id)"
         ))
 
+        # CU40 – Columna stripe_payment_intent_id en pagos
+        await conn.execute(text(
+            "ALTER TABLE pagos ADD COLUMN IF NOT EXISTS stripe_payment_intent_id VARCHAR(100)"
+        ))
+
+        # Nuevas columnas: número de seguro, especialidades taller, cobros visita
+        await conn.execute(text(
+            "ALTER TABLE vehiculos ADD COLUMN IF NOT EXISTS numero_seguro VARCHAR(100)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE talleres ADD COLUMN IF NOT EXISTS especialidades TEXT"
+        ))
+
     # CU42 – Crear tenant "default" si no existe
     async with AsyncSessionLocal() as session:
         from sqlalchemy import select
@@ -92,7 +105,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Taller Backend", version="2.0.0", lifespan=lifespan)
 
 _extra_origin = os.getenv("FRONTEND_ORIGIN", "")
-_allowed_origins = [_extra_origin] if _extra_origin else []
+
+_allowed_origins = [
+    "http://localhost:4200",
+    "http://127.0.0.1:4200",
+    "http://localhost:3000",
+    "http://127.0.0.1:8000",
+]
+if _extra_origin:
+    _allowed_origins.append(_extra_origin)
 
 app.add_middleware(
     CORSMiddleware,

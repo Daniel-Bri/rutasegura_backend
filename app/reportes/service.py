@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc, func
+from sqlalchemy import select, and_, desc, func, case, text, Numeric, cast
 
 from app.reportes.models import BitacoraEvento
 
@@ -378,4 +378,175 @@ async def obtener_metricas(
             }
             for p in pagos
         ],
+    }
+
+
+# ── CU41 · KPIs operacionales ─────────────────────────────
+async def obtener_kpis(
+    db: AsyncSession,
+    desde: Optional[datetime] = None,
+    hasta: Optional[datetime] = None,
+    tenant_id: Optional[int] = None,
+    taller_id_filtro: Optional[int] = None,
+) -> dict:
+    from app.emergencias.models import Incidente
+    from app.talleres_tecnicos.models import Asignacion, ServicioRealizado
+    from app.acceso_registro.models import Taller
+
+    # ── Filtros base ──────────────────────────────────────────
+    inc_filters = []
+    asig_filters = []
+    if desde:
+        inc_filters.append(Incidente.created_at >= desde)
+        asig_filters.append(Asignacion.created_at >= desde)
+    if hasta:
+        inc_filters.append(Incidente.created_at <= hasta)
+        asig_filters.append(Asignacion.created_at <= hasta)
+    if taller_id_filtro:
+        asig_filters.append(Asignacion.taller_id == taller_id_filtro)
+
+    # Para filtrar por tenant: pasar por la tabla talleres
+    tenant_join_needed = tenant_id is not None and taller_id_filtro is None
+
+    # ── 1. Tiempo promedio de asignación (incidente → taller acepta) ─
+    q_asig_time = (
+        select(func.avg(
+            func.extract('epoch', Asignacion.created_at - Incidente.created_at) / 60
+        ))
+        .join(Incidente, Asignacion.incidente_id == Incidente.id)
+    )
+    if tenant_join_needed:
+        q_asig_time = q_asig_time.join(Taller, Asignacion.taller_id == Taller.id).where(Taller.tenant_id == tenant_id)
+    if asig_filters:
+        q_asig_time = q_asig_time.where(and_(*asig_filters))
+    avg_asig = (await db.execute(q_asig_time)).scalar_one_or_none()
+
+    # ── 2. Tiempo promedio de servicio (aceptación → cierre) ─────────
+    q_srv_time = (
+        select(func.avg(
+            func.extract('epoch', ServicioRealizado.fecha_cierre - Asignacion.created_at) / 60
+        ))
+        .join(Asignacion, ServicioRealizado.asignacion_id == Asignacion.id)
+    )
+    if tenant_join_needed:
+        q_srv_time = q_srv_time.join(Taller, Asignacion.taller_id == Taller.id).where(Taller.tenant_id == tenant_id)
+    if asig_filters:
+        q_srv_time = q_srv_time.where(and_(*asig_filters))
+    avg_srv = (await db.execute(q_srv_time)).scalar_one_or_none()
+
+    # ── 3. Incidentes por tipo ────────────────────────────────────────
+    q_tipos = select(Incidente.tipo_incidente, func.count(Incidente.id)).group_by(Incidente.tipo_incidente)
+    if inc_filters:
+        q_tipos = q_tipos.where(and_(*inc_filters))
+    if taller_id_filtro:
+        q_tipos = q_tipos.join(Asignacion, Asignacion.incidente_id == Incidente.id).where(Asignacion.taller_id == taller_id_filtro)
+    if tenant_join_needed:
+        q_tipos = (
+            q_tipos.join(Asignacion, Asignacion.incidente_id == Incidente.id)
+            .join(Taller, Asignacion.taller_id == Taller.id)
+            .where(Taller.tenant_id == tenant_id)
+        )
+    tipos_rows = (await db.execute(q_tipos)).all()
+    por_tipo = {(r[0] or "otros"): r[1] for r in tipos_rows}
+
+    # ── 4. Talleres más eficientes (top 5 por tiempo promedio) ───────
+    q_efic = (
+        select(
+            Asignacion.taller_id,
+            Taller.nombre,
+            func.avg(func.extract('epoch', ServicioRealizado.fecha_cierre - Asignacion.created_at) / 60).label("avg_min"),
+            func.count(ServicioRealizado.id).label("total"),
+        )
+        .join(ServicioRealizado, ServicioRealizado.asignacion_id == Asignacion.id)
+        .join(Taller, Taller.id == Asignacion.taller_id)
+        .group_by(Asignacion.taller_id, Taller.nombre)
+        .order_by(text("avg_min ASC"))
+        .limit(5)
+    )
+    if tenant_join_needed:
+        q_efic = q_efic.where(Taller.tenant_id == tenant_id)
+    if taller_id_filtro:
+        q_efic = q_efic.where(Asignacion.taller_id == taller_id_filtro)
+    if asig_filters:
+        q_efic = q_efic.where(and_(*asig_filters))
+    efic_rows = (await db.execute(q_efic)).all()
+    talleres_eficientes = [
+        {"taller_id": r[0], "nombre": r[1], "tiempo_promedio_min": round(float(r[2] or 0), 1), "total_servicios": r[3]}
+        for r in efic_rows
+    ]
+
+    # ── 5. Zonas con más incidentes (top 10) ─────────────────────────
+    lat_col = func.round(cast(Incidente.latitud,  Numeric(10, 6)), 1).label("lat")
+    lon_col = func.round(cast(Incidente.longitud, Numeric(10, 6)), 1).label("lon")
+    q_zonas = (
+        select(lat_col, lon_col, func.count(Incidente.id).label("total"))
+        .where(Incidente.latitud.isnot(None), Incidente.longitud.isnot(None))
+        .group_by(lat_col, lon_col)
+        .order_by(text("total DESC"))
+        .limit(10)
+    )
+    if inc_filters:
+        q_zonas = q_zonas.where(and_(*inc_filters))
+    zonas_rows = (await db.execute(q_zonas)).all()
+    zonas_calientes = [
+        {"lat": float(r[0] or 0), "lon": float(r[1] or 0), "total": r[2]}
+        for r in zonas_rows
+    ]
+
+    # ── 6. Casos cancelados ───────────────────────────────────────────
+    q_canc_asig = select(func.count(Asignacion.id)).where(Asignacion.estado == "cancelado")
+    q_canc_inc  = select(func.count(Incidente.id)).where(Incidente.estado == "cancelado")
+    if asig_filters:
+        q_canc_asig = q_canc_asig.where(and_(*asig_filters))
+    if inc_filters:
+        q_canc_inc = q_canc_inc.where(and_(*inc_filters))
+    if tenant_join_needed:
+        q_canc_asig = q_canc_asig.join(Taller, Asignacion.taller_id == Taller.id).where(Taller.tenant_id == tenant_id)
+    if taller_id_filtro:
+        q_canc_asig = q_canc_asig.where(Asignacion.taller_id == taller_id_filtro)
+    cancelados_asig = (await db.execute(q_canc_asig)).scalar_one()
+    cancelados_inc  = (await db.execute(q_canc_inc)).scalar_one()
+
+    # ── 7. SLA compliance (servicio completo en < 120 min) ───────────
+    SLA_MINUTOS = 120
+    q_sla = (
+        select(
+            func.count(ServicioRealizado.id).label("total"),
+            func.sum(case(
+                (func.extract('epoch', ServicioRealizado.fecha_cierre - Asignacion.created_at) <= SLA_MINUTOS * 60, 1),
+                else_=0
+            )).label("dentro_sla"),
+        )
+        .join(Asignacion, ServicioRealizado.asignacion_id == Asignacion.id)
+    )
+    if tenant_join_needed:
+        q_sla = q_sla.join(Taller, Asignacion.taller_id == Taller.id).where(Taller.tenant_id == tenant_id)
+    if taller_id_filtro:
+        q_sla = q_sla.where(Asignacion.taller_id == taller_id_filtro)
+    if asig_filters:
+        q_sla = q_sla.where(and_(*asig_filters))
+    sla_row = (await db.execute(q_sla)).first()
+    total_srv   = int(sla_row[0] or 0)
+    dentro_sla  = int(sla_row[1] or 0)
+    sla_pct     = round(dentro_sla / total_srv * 100, 1) if total_srv > 0 else 0.0
+
+    # ── 8. Total incidentes y servicios ──────────────────────────────
+    q_total_inc = select(func.count(Incidente.id))
+    if inc_filters:
+        q_total_inc = q_total_inc.where(and_(*inc_filters))
+    total_incidentes = (await db.execute(q_total_inc)).scalar_one()
+
+    return {
+        "tiempo_promedio_asignacion_min": round(float(avg_asig or 0), 1),
+        "tiempo_promedio_servicio_min":   round(float(avg_srv or 0), 1),
+        "total_incidentes":               int(total_incidentes),
+        "total_servicios_completados":    total_srv,
+        "casos_cancelados_asignacion":    int(cancelados_asig),
+        "casos_cancelados_incidente":     int(cancelados_inc),
+        "sla_compliance_pct":             sla_pct,
+        "sla_minutos":                    SLA_MINUTOS,
+        "dentro_sla":                     dentro_sla,
+        "incidentes_por_tipo":            por_tipo,
+        "talleres_eficientes":            talleres_eficientes,
+        "zonas_calientes":                zonas_calientes,
     }

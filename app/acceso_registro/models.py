@@ -41,6 +41,7 @@ class Vehiculo(Base):
     modelo = Column(String(100), nullable=False)
     anio = Column(Integer, nullable=False)
     color = Column(String(50), nullable=False)
+    numero_seguro = Column(String(100), nullable=True)   # póliza de seguro del vehículo
     activo = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -59,6 +60,7 @@ class Taller(Base):
     disponible = Column(Boolean, default=False)
     estado = Column(String(20), default="pendiente")  # pendiente | aprobado | rechazado
     rating = Column(Float, default=0.0)
+    especialidades = Column(Text, nullable=True)  # JSON: ["mecanica_general","chaperia",...]
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

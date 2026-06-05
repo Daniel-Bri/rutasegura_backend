@@ -8,12 +8,29 @@ Scoring de taller para un incidente:
 - rating_score: taller.rating / 5.0
 - disp_score  : 1.0 si disponible, 0.3 si no
 - bonus        : +0.12 para prioridad=alta (SOS), -0.05 para baja
-
-La lista de disponibles se ordena por score DESC → los talleres más cercanos y
-mejor valorados ven los incidentes más relevantes primero.
 """
 from math import radians, cos, sin, asin, sqrt
 from typing import Optional
+import json
+
+# Especialidades disponibles en la plataforma
+ESPECIALIDADES = [
+    "mecanica_general",
+    "electromecanica",
+    "chaperia",
+    "llanteria",
+    "electricista",
+    "pintura",
+]
+
+# Qué especialidades cubre cada tipo de incidente (IA)
+ESPECIALIDADES_POR_TIPO: dict[str, list[str]] = {
+    "bateria":  ["electricista", "electromecanica", "mecanica_general"],
+    "llanta":   ["llanteria", "mecanica_general"],
+    "motor":    ["mecanica_general", "electromecanica"],
+    "choque":   ["chaperia", "mecanica_general"],
+    "otros":    ["mecanica_general"],
+}
 
 _W_DIST = 0.55
 _W_RATE = 0.30
@@ -70,3 +87,62 @@ def calcular_score(
     dist_n  = max(0.0, 1.0 - dist_km / RADIO_KM)
     score   = _W_DIST * dist_n + _W_RATE * rating_n + _W_DISP * disp_n + bonus
     return round(min(1.0, max(0.0, score)), 4), round(dist_km, 2)
+
+
+def taller_tiene_especialidad(taller_especialidades_json: Optional[str], tipo_incidente: Optional[str]) -> bool:
+    """Devuelve True si el taller tiene al menos una especialidad compatible con el tipo de incidente."""
+    if not tipo_incidente:
+        return True  # sin tipo conocido, cualquier taller puede atender
+    requeridas = ESPECIALIDADES_POR_TIPO.get(tipo_incidente, ["mecanica_general"])
+    if not taller_especialidades_json:
+        return True  # taller sin especialidades declaradas puede atender cualquier cosa
+    try:
+        taller_esp = json.loads(taller_especialidades_json)
+    except Exception:
+        return True
+    return any(e in requeridas for e in taller_esp)
+
+
+def seleccionar_top3(
+    talleres: list,   # lista de objetos Taller con .latitud, .longitud, .rating, .disponible, .especialidades
+    inc_lat: Optional[float],
+    inc_lon: Optional[float],
+    prioridad: str = "media",
+    tipo_incidente: Optional[str] = None,
+    max_talleres: int = 3,
+) -> list:
+    """Selecciona hasta max_talleres talleres candidatos para invitar a un incidente.
+
+    Filtra por especialidad primero; si no hay suficientes con la especialidad exacta,
+    amplía al resto de talleres aprobados para garantizar que siempre haya candidatos.
+    Devuelve la lista ordenada por score DESC.
+    """
+    aprobados = [t for t in talleres if t.estado == "aprobado"]
+
+    # Primer intento: con filtro de especialidad
+    candidatos = [
+        t for t in aprobados
+        if taller_tiene_especialidad(t.especialidades, tipo_incidente)
+    ]
+
+    # Fallback: si no hay suficientes con especialidad, usar todos los aprobados
+    if len(candidatos) < max_talleres:
+        candidatos = aprobados
+
+    scored = []
+    for t in candidatos:
+        score, dist = calcular_score(
+            t.latitud, t.longitud, t.rating or 0.0,
+            t.disponible, inc_lat, inc_lon, prioridad,
+        )
+        scored.append((t, score, dist))
+
+    # Si hay scores positivos, usar solo esos (hay GPS disponible)
+    con_score = [(t, s, d) for t, s, d in scored if s > 0]
+    if con_score:
+        con_score.sort(key=lambda x: -x[1])
+        return con_score[:max_talleres]
+
+    # Sin GPS: ordenar por disponibilidad + rating y tomar los primeros
+    scored.sort(key=lambda x: (-(1.0 if x[0].disponible else 0.3), -(x[0].rating or 0.0)))
+    return [(t, 0.0, None) for t, _, _ in scored[:max_talleres]]

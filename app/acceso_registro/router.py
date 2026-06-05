@@ -111,6 +111,44 @@ async def registrar_taller(
     return TallerResponse.model_validate(taller)
 
 
+# ── Mi perfil de taller (taller ve y edita sus propios datos) ─
+@router.get("/mi-taller", response_model=TallerResponse)
+async def mi_taller_perfil(
+    current_user: User = Depends(require_role("taller")),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import select as _sel
+    r = await db.execute(_sel(Taller).where(Taller.usuario_id == current_user.id))
+    taller = r.scalar_one_or_none()
+    if not taller:
+        raise HTTPException(status_code=404, detail="No tienes un taller registrado")
+    return TallerResponse.model_validate(taller)
+
+
+@router.patch("/mi-taller", response_model=TallerResponse)
+async def actualizar_mi_taller(
+    data: schemas.TallerUpdate,
+    current_user: User = Depends(require_role("taller")),
+    db: AsyncSession = Depends(get_db),
+):
+    import json as _json
+    from sqlalchemy import select as _sel
+    r = await db.execute(_sel(Taller).where(Taller.usuario_id == current_user.id))
+    taller = r.scalar_one_or_none()
+    if not taller:
+        raise HTTPException(status_code=404, detail="No tienes un taller registrado")
+    if data.nombre is not None:          taller.nombre          = data.nombre
+    if data.direccion is not None:       taller.direccion       = data.direccion
+    if data.telefono is not None:        taller.telefono        = data.telefono
+    if data.email_comercial is not None: taller.email_comercial = data.email_comercial
+    if data.latitud is not None:         taller.latitud         = data.latitud
+    if data.longitud is not None:        taller.longitud        = data.longitud
+    if data.especialidades is not None:  taller.especialidades  = _json.dumps(data.especialidades)
+    await db.commit()
+    await db.refresh(taller)
+    return TallerResponse.model_validate(taller)
+
+
 # ── CU27 - Listar usuarios (admin) ────────────────────────
 @router.get("/usuarios", response_model=UserListResponse)
 async def listar_usuarios(

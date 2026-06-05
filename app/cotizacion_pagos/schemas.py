@@ -62,6 +62,7 @@ class CotizacionResponse(BaseModel):
     monto_estimado: float
     detalle: Optional[str]
     estado: str
+    estado_asignacion: Optional[str] = None  # poblado en mis_cotizaciones
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -76,8 +77,8 @@ class PagoCreate(BaseModel):
     @field_validator("metodo")
     @classmethod
     def metodo_valido(cls, v: str) -> str:
-        if v not in ("efectivo", "qr"):
-            raise ValueError("Método debe ser 'efectivo' o 'qr'")
+        if v not in ("efectivo", "qr", "tarjeta"):
+            raise ValueError("Método debe ser 'efectivo', 'qr' o 'tarjeta'")
         return v
 
 
@@ -113,3 +114,21 @@ class ComisionesResponse(BaseModel):
     comision_plataforma: float
     ingresos_netos: float
     pagos: list[ComisionItem]
+
+
+# ── Stripe (CU40) ──────────────────────────────────────────
+
+class StripeIntentRequest(BaseModel):
+    cotizacion_id: int
+
+
+class StripeIntentResponse(BaseModel):
+    client_secret: str
+    payment_intent_id: str
+    monto: float
+    currency: str = "usd"
+
+
+class StripeConfirmarRequest(BaseModel):
+    cotizacion_id: int
+    payment_intent_id: str

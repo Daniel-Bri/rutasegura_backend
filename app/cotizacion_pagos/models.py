@@ -22,5 +22,6 @@ class Pago(Base):
     cotizacion_id = Column(Integer, ForeignKey("cotizaciones.id"), nullable=False, unique=True)
     monto         = Column(Float, nullable=False)
     metodo        = Column(String(30), nullable=False)   # efectivo | transferencia | tarjeta
+    stripe_payment_intent_id = Column(String(100), nullable=True)
     estado        = Column(String(20), default="completado")
     created_at    = Column(DateTime(timezone=True), server_default=func.now())

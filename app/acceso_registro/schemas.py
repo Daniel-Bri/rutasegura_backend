@@ -96,6 +96,7 @@ class VehiculoCreate(BaseModel):
     modelo: str
     anio: int
     color: str
+    numero_seguro: Optional[str] = None
 
     @field_validator("placa")
     @classmethod
@@ -121,6 +122,7 @@ class VehiculoResponse(BaseModel):
     modelo: str
     anio: int
     color: str
+    numero_seguro: Optional[str] = None
     activo: bool
     created_at: datetime
 
@@ -128,6 +130,12 @@ class VehiculoResponse(BaseModel):
 
 
 # ── Taller ─────────────────────────────────────────────────
+ESPECIALIDADES_VALIDAS = [
+    "mecanica_general", "electromecanica", "chaperia",
+    "llanteria", "electricista", "pintura",
+]
+
+
 class TallerCreate(BaseModel):
     nombre: str
     direccion: str
@@ -135,6 +143,17 @@ class TallerCreate(BaseModel):
     email_comercial: Optional[str] = None
     latitud: Optional[float] = None
     longitud: Optional[float] = None
+    especialidades: Optional[list[str]] = None
+
+    @field_validator("especialidades")
+    @classmethod
+    def especialidades_validas(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return v
+        invalidas = [e for e in v if e not in ESPECIALIDADES_VALIDAS]
+        if invalidas:
+            raise ValueError(f"Especialidades inválidas: {invalidas}. Válidas: {ESPECIALIDADES_VALIDAS}")
+        return v
 
     @field_validator("nombre")
     @classmethod
@@ -142,6 +161,26 @@ class TallerCreate(BaseModel):
         if len(v.strip()) < 3:
             raise ValueError("El nombre debe tener al menos 3 caracteres")
         return v.strip()
+
+
+class TallerUpdate(BaseModel):
+    nombre:          Optional[str]        = None
+    direccion:       Optional[str]        = None
+    telefono:        Optional[str]        = None
+    email_comercial: Optional[str]        = None
+    latitud:         Optional[float]      = None
+    longitud:        Optional[float]      = None
+    especialidades:  Optional[list[str]]  = None
+
+    @field_validator("especialidades")
+    @classmethod
+    def especialidades_validas(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return v
+        invalidas = [e for e in v if e not in ESPECIALIDADES_VALIDAS]
+        if invalidas:
+            raise ValueError(f"Especialidades inválidas: {invalidas}")
+        return v
 
 
 class TallerResponse(BaseModel):
@@ -156,6 +195,7 @@ class TallerResponse(BaseModel):
     disponible: bool
     estado: str
     rating: float
+    especialidades: Optional[str] = None   # JSON string
     created_at: datetime
 
     model_config = {"from_attributes": True}

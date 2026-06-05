@@ -7,6 +7,7 @@ class TecnicoCreate(BaseModel):
     nombre: str
     especialidad: str
     telefono: Optional[str] = None
+    email: Optional[str] = None  # email del usuario con rol "tecnico" para vincular
 
     @field_validator("nombre")
     @classmethod
@@ -28,10 +29,12 @@ class TecnicoUpdate(BaseModel):
     especialidad: Optional[str] = None
     telefono: Optional[str] = None
     estado: Optional[str] = None
+    email: Optional[str] = None  # para vincular/cambiar usuario
 
 
 class TecnicoResponse(BaseModel):
     id: int
+    usuario_id: Optional[int]
     taller_id: int
     nombre: str
     especialidad: str
@@ -66,11 +69,24 @@ class AsignarTecnicoPayload(BaseModel):
 # en_sitio es preferiblemente confirmado por el cliente (CU31), pero el taller
 # puede hacerlo como fallback para casos SOS o cuando el cliente no tiene señal.
 TRANSICIONES_VALIDAS: dict[str, set[str]] = {
+    "invitado":      {"cancelado"},   # solo puede cancelarse si el cliente no eligió
     "aceptado":      {"en_camino", "cancelado"},
     "en_camino":     {"en_sitio",  "cancelado"},
     "en_sitio":      {"en_reparacion"},
     "en_reparacion": {"finalizado"},
 }
+
+
+class CobroVisitaCreate(BaseModel):
+    monto: float
+    concepto: Optional[str] = None
+
+    @field_validator("monto")
+    @classmethod
+    def monto_positivo(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("El monto debe ser mayor a 0")
+        return round(v, 2)
 
 
 class AsignacionEstadoUpdate(BaseModel):

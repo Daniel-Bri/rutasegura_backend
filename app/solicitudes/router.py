@@ -61,44 +61,38 @@ async def mis_asignaciones_cliente(
     return [AsignacionResponse.model_validate(a) for a in result.scalars().all()]
 
 
-# ── CU13 – Ver solicitudes disponibles (§4.6 motor IA + score) ──────────
+# ── CU13 – Ver solicitudes del taller (invitadas + activas) ─────────────
 @router.get("/disponibles", response_model=list[SolicitudDisponibleResponse])
 async def disponibles(
     current_user: User = Depends(require_role("taller")),
     db: AsyncSession = Depends(get_db),
 ):
+    """Devuelve las asignaciones que el taller tiene en estado invitado o activo,
+    con los datos del incidente asociado para que el taller pueda cotizar."""
     taller = await get_taller_by_user(current_user.id, db)
 
-    tiene_asignacion_activa = (
-        exists()
+    # Asignaciones del taller que están en estados activos
+    asig_res = await db.execute(
+        select(Asignacion)
         .where(
-            and_(
-                Asignacion.incidente_id == Incidente.id,
-                Asignacion.estado.notin_(_ESTADOS_CERRADOS),
-            )
+            Asignacion.taller_id == taller.id,
+            Asignacion.estado.in_(["invitado", "aceptado", "en_camino", "en_sitio", "en_reparacion"]),
         )
-        .correlate(Incidente)
+        .order_by(Asignacion.created_at.desc())
     )
+    asignaciones = list(asig_res.scalars().all())
 
-    result = await db.execute(
-        select(Incidente)
-        .options(undefer(Incidente.tipo_incidente))
-        .where(
-            Incidente.estado == "pendiente",
-            or_(
-                and_(Incidente.latitud.isnot(None), Incidente.longitud.isnot(None)),
-                Incidente.prioridad == "alta",
-            ),
-            ~tiene_asignacion_activa,
-        )
-        .order_by(Incidente.prioridad.desc(), Incidente.created_at.desc())
-    )
-    incidentes = list(result.scalars().all())
-
-    if not incidentes:
+    if not asignaciones:
         return []
 
-    inc_ids = [i.id for i in incidentes]
+    inc_ids = [a.incidente_id for a in asignaciones]
+    inc_res = await db.execute(
+        select(Incidente)
+        .options(undefer(Incidente.tipo_incidente))
+        .where(Incidente.id.in_(inc_ids))
+    )
+    incidentes_map = {i.id: i for i in inc_res.scalars().all()}
+
     evid_res = await db.execute(
         select(Evidencia.incidente_id, Evidencia.url, Evidencia.tipo)
         .where(Evidencia.incidente_id.in_(inc_ids))
@@ -112,8 +106,11 @@ async def disponibles(
             audio_map[row[0]] = True
 
     resultado: list[SolicitudDisponibleResponse] = []
-    for i in incidentes:
-        score, distancia = calcular_score(
+    for asig in asignaciones:
+        i = incidentes_map.get(asig.incidente_id)
+        if not i:
+            continue
+        _, distancia = calcular_score(
             taller.latitud, taller.longitud, taller.rating or 0.0,
             taller.disponible, i.latitud, i.longitud, i.prioridad,
         )
@@ -128,21 +125,14 @@ async def disponibles(
             descripcion=i.descripcion,
             tipo_problema=tipo_problema,
             prioridad=i.prioridad,
-            estado=i.estado,
+            estado=asig.estado,   # estado de la ASIGNACIÓN, no del incidente
             fotos_urls=fotos_map.get(i.id, []),
             tiene_audio=audio_map.get(i.id, False),
             created_at=i.created_at.isoformat() if i.created_at else "",
-            es_sos=(
-                i.prioridad == "alta"
-                and i.descripcion is not None
-                and "SOS" in (i.descripcion or "")
-            ),
+            es_sos=(i.prioridad == "alta" and "SOS" in (i.descripcion or "")),
             distancia_km=distancia,
-            score_ia=score,
+            score_ia=0.0,
         ))
-
-    if taller.latitud and taller.longitud:
-        resultado.sort(key=lambda x: -x.score_ia)
 
     return resultado
 
@@ -340,39 +330,58 @@ async def cancelar(
     if incidente.estado in ("resuelto", "cancelado"):
         raise HTTPException(status_code=400, detail=f"El incidente ya está {incidente.estado}")
 
-    incidente.estado = "cancelado"
-
-    # Cancelar asignaciones activas
+    # Buscar asignación activa
     asig_res = await db.execute(
         select(Asignacion).where(
             Asignacion.incidente_id == solicitud_id,
             Asignacion.estado.notin_(_ESTADOS_CERRADOS),
         )
     )
-    for asig in asig_res.scalars().all():
+    asignaciones_activas = list(asig_res.scalars().all())
+
+    # Bloquear cancelación si el vehículo ya está en reparación
+    en_reparacion = any(a.estado == "en_reparacion" for a in asignaciones_activas)
+    if en_reparacion:
+        raise HTTPException(
+            status_code=400,
+            detail="No puedes cancelar: el vehículo ya está en reparación. Contacta al taller directamente."
+        )
+
+    # Verificar si el técnico ya llegó (en_sitio) → habrá cobro por visita
+    tecnico_en_sitio = any(a.estado == "en_sitio" for a in asignaciones_activas)
+
+    incidente.estado = "cancelado"
+    for asig in asignaciones_activas:
         asig.estado = "cancelado"
 
     await db.commit()
 
-    # Notificar al taller que el cliente canceló
+    # Notificar a los talleres
     try:
         from app.notificaciones.service import notificar_usuario
         from app.acceso_registro.models import Taller as _Taller
-        for asig in asig_res.scalars():
+        for asig in asignaciones_activas:
             t_res = await db.execute(select(_Taller.usuario_id).where(_Taller.id == asig.taller_id))
             t_row = t_res.first()
             if t_row:
+                msg = (
+                    f"El cliente canceló el incidente #{solicitud_id}. "
+                    + ("El técnico ya estaba en sitio — puedes registrar un cobro por visita." if tecnico_en_sitio else "")
+                )
                 await notificar_usuario(
-                    t_row[0],
-                    "❌ Solicitud cancelada",
-                    f"El cliente canceló el incidente #{solicitud_id}",
-                    db,
-                    {"tipo": "solicitud_cancelada", "incidente_id": str(solicitud_id)},
+                    t_row[0], "❌ Solicitud cancelada", msg, db,
+                    {"tipo": "solicitud_cancelada", "incidente_id": str(solicitud_id),
+                     "cobro_visita_posible": str(tecnico_en_sitio)},
                 )
     except Exception:
         pass
 
-    return {"id": incidente.id, "estado": incidente.estado, "msg": "Solicitud cancelada correctamente"}
+    return {
+        "id": incidente.id,
+        "estado": incidente.estado,
+        "msg": "Solicitud cancelada correctamente",
+        "cobro_visita_posible": tecnico_en_sitio,
+    }
 
 
 # ── CU16 – Rechazar asignación (taller) ──────────────────────────────────

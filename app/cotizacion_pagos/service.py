@@ -19,7 +19,7 @@ async def listar_incidentes_disponibles(taller_id: int, db: AsyncSession) -> lis
     result = await db.execute(
         select(Asignacion).where(
             Asignacion.taller_id == taller_id,
-            Asignacion.estado == "aceptado",
+            Asignacion.estado.in_(["invitado", "aceptado"]),
         )
     )
     asignaciones = list(result.scalars().all())
@@ -47,10 +47,11 @@ async def generar_cotizacion(taller_id: int, data: CotizacionCreate, db: AsyncSe
         select(Asignacion).where(
             Asignacion.incidente_id == data.incidente_id,
             Asignacion.taller_id == taller_id,
+            Asignacion.estado.in_(["invitado", "aceptado"]),
         )
     )
     if not result.scalar_one_or_none():
-        raise HTTPException(status_code=403, detail="Este incidente no está asignado a tu taller")
+        raise HTTPException(status_code=403, detail="No tienes una invitación activa para este incidente")
 
     result = await db.execute(
         select(Cotizacion).where(
@@ -107,12 +108,77 @@ async def get_cotizacion(cotizacion_id: int, db: AsyncSession) -> Cotizacion:
     return cotizacion
 
 
-# ── CU20 · Confirmar / Rechazar ────────────────────────────
+# ── CU20 · Confirmar / Rechazar cotización ─────────────────
 async def actualizar_estado(cotizacion_id: int, nuevo_estado: str, db: AsyncSession) -> Cotizacion:
     cotizacion = await get_cotizacion(cotizacion_id, db)
     if cotizacion.estado != "pendiente":
         raise HTTPException(status_code=400, detail="Solo se pueden confirmar cotizaciones en estado pendiente")
+
     cotizacion.estado = nuevo_estado
+
+    # Si el cliente ACEPTA: activar la asignación de ese taller y rechazar las otras
+    if nuevo_estado == "aceptada":
+        # Marcar asignación del taller elegido como "aceptado"
+        asig_res = await db.execute(
+            select(Asignacion).where(
+                Asignacion.incidente_id == cotizacion.incidente_id,
+                Asignacion.taller_id == cotizacion.taller_id,
+                Asignacion.estado == "invitado",
+            )
+        )
+        asig_elegida = asig_res.scalar_one_or_none()
+        if asig_elegida:
+            asig_elegida.estado = "aceptado"
+
+        # Rechazar asignaciones de los otros talleres invitados
+        otras_res = await db.execute(
+            select(Asignacion).where(
+                Asignacion.incidente_id == cotizacion.incidente_id,
+                Asignacion.taller_id != cotizacion.taller_id,
+                Asignacion.estado == "invitado",
+            )
+        )
+        for otra in otras_res.scalars().all():
+            otra.estado = "rechazado"
+
+        # Rechazar las cotizaciones de los otros talleres
+        otras_cot_res = await db.execute(
+            select(Cotizacion).where(
+                Cotizacion.incidente_id == cotizacion.incidente_id,
+                Cotizacion.taller_id != cotizacion.taller_id,
+                Cotizacion.estado == "pendiente",
+            )
+        )
+        for otra_cot in otras_cot_res.scalars().all():
+            otra_cot.estado = "rechazada"
+
+        # Notificar al taller elegido
+        try:
+            from app.acceso_registro.models import Taller as _Taller
+            from app.notificaciones.service import notificar_usuario
+            from app.comunicacion.websocket import notify
+            t_res = await db.execute(
+                select(_Taller).where(_Taller.id == cotizacion.taller_id)
+            )
+            taller = t_res.scalar_one_or_none()
+            if taller:
+                monto_str = f"Bs. {cotizacion.monto_estimado:.2f}"
+                await notificar_usuario(
+                    taller.usuario_id,
+                    "✅ Cotización aceptada",
+                    f"El cliente aceptó tu cotización de {monto_str}. Asigna un técnico para comenzar.",
+                    db,
+                    {"tipo": "cotizacion_aceptada", "cotizacion_id": str(cotizacion_id)},
+                )
+                await notify(taller.usuario_id, "notificacion", {
+                    "titulo": "✅ Cotización aceptada",
+                    "mensaje": f"El cliente aceptó tu cotización de {monto_str}.",
+                    "tipo": "cotizacion_aceptada",
+                    "referencia_id": cotizacion.incidente_id,
+                })
+        except Exception:
+            pass
+
     await db.commit()
     await db.refresh(cotizacion)
     return cotizacion
@@ -134,6 +200,22 @@ async def realizar_pago(usuario_id: int, data: PagoCreate, db: AsyncSession) -> 
 
     if cotizacion.estado != "aceptada":
         raise HTTPException(status_code=400, detail="Solo se puede pagar una cotización aceptada")
+
+    # El pago solo se habilita cuando el servicio fue completado
+    from app.talleres_tecnicos.models import Asignacion
+    asig_res = await db.execute(
+        select(Asignacion)
+        .where(Asignacion.incidente_id == cotizacion.incidente_id,
+               Asignacion.taller_id == cotizacion.taller_id)
+        .order_by(Asignacion.created_at.desc())
+    )
+    asig = asig_res.scalars().first()
+    if not asig or asig.estado != "finalizado":
+        estado_actual = asig.estado if asig else "sin asignación"
+        raise HTTPException(
+            status_code=400,
+            detail=f"El pago solo está disponible cuando el servicio es finalizado. Estado actual: {estado_actual}",
+        )
 
     existing = await db.execute(select(Pago).where(Pago.cotizacion_id == data.cotizacion_id))
     if existing.scalar_one_or_none():
@@ -186,3 +268,109 @@ async def listar_comisiones(taller_id: int, db: AsyncSession) -> ComisionesRespo
         ingresos_netos=round(bruto * (1 - _TASA_COMISION), 2),
         pagos=items,
     )
+
+
+# ── CU40 · Crear PaymentIntent en Stripe ──────────────────
+async def crear_payment_intent(usuario_id: int, cotizacion_id: int, db: AsyncSession) -> dict:
+    import stripe
+    import asyncio
+    from app.core.config import settings
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+
+    cotizacion = await get_cotizacion(cotizacion_id, db)
+
+    from app.emergencias.models import Incidente
+    result = await db.execute(
+        select(Incidente).where(
+            Incidente.id == cotizacion.incidente_id,
+            Incidente.usuario_id == usuario_id,
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=403, detail="No tienes permiso para pagar esta cotización")
+
+    if cotizacion.estado != "aceptada":
+        raise HTTPException(status_code=400, detail="Solo se puede pagar una cotización aceptada")
+
+    from app.talleres_tecnicos.models import Asignacion
+    asig_res2 = await db.execute(
+        select(Asignacion)
+        .where(Asignacion.incidente_id == cotizacion.incidente_id,
+               Asignacion.taller_id == cotizacion.taller_id)
+        .order_by(Asignacion.created_at.desc())
+    )
+    asig2 = asig_res2.scalars().first()
+    if not asig2 or asig2.estado != "finalizado":
+        estado_actual = asig2.estado if asig2 else "sin asignación"
+        raise HTTPException(
+            status_code=400,
+            detail=f"El pago solo está disponible cuando el servicio es finalizado. Estado actual: {estado_actual}",
+        )
+
+    existing = await db.execute(select(Pago).where(Pago.cotizacion_id == cotizacion_id))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Esta cotización ya fue pagada")
+
+    monto_centavos = int(cotizacion.monto_estimado * 100)
+    if monto_centavos < 50:
+        raise HTTPException(status_code=400, detail="El monto mínimo para pago con tarjeta es Bs. 0.50")
+
+    try:
+        intent = await asyncio.to_thread(
+            lambda: stripe.PaymentIntent.create(
+                amount=monto_centavos,
+                currency="usd",
+                metadata={"cotizacion_id": str(cotizacion_id), "usuario_id": str(usuario_id)},
+            )
+        )
+    except stripe.error.AuthenticationError:
+        raise HTTPException(status_code=500, detail="Error de autenticación con Stripe. Verifica STRIPE_SECRET_KEY en .env")
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=400, detail=f"Error de Stripe: {getattr(e, 'user_message', None) or str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al crear el pago: {str(e)}")
+
+    return {
+        "client_secret": intent.client_secret,
+        "payment_intent_id": intent.id,
+        "monto": cotizacion.monto_estimado,
+        "currency": "usd",
+    }
+
+
+# ── CU40 · Confirmar pago Stripe y guardar en BD ──────────
+async def confirmar_pago_stripe(
+    usuario_id: int, cotizacion_id: int, payment_intent_id: str, db: AsyncSession
+) -> Pago:
+    import stripe
+    import asyncio
+    from app.core.config import settings
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+
+    intent = await asyncio.to_thread(stripe.PaymentIntent.retrieve, payment_intent_id)
+
+    if intent.status != "succeeded":
+        raise HTTPException(
+            status_code=400,
+            detail=f"El pago no fue completado en Stripe. Estado: {intent.status}",
+        )
+
+    cotizacion = await get_cotizacion(cotizacion_id, db)
+
+    existing = await db.execute(select(Pago).where(Pago.cotizacion_id == cotizacion_id))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Esta cotización ya fue pagada")
+
+    pago = Pago(
+        cotizacion_id=cotizacion_id,
+        monto=cotizacion.monto_estimado,
+        metodo="tarjeta",
+        estado="completado",
+        stripe_payment_intent_id=payment_intent_id,
+    )
+    db.add(pago)
+    cotizacion.estado = "pagada"
+    await db.commit()
+    await db.refresh(pago)
+    return pago
+

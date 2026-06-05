@@ -52,12 +52,26 @@ async def listar_tecnicos(taller_id: int, db: AsyncSession) -> list[Tecnico]:
     return tecnicos
 
 
+async def _resolver_usuario_id(email: str | None, db: AsyncSession) -> int | None:
+    """Busca un User con role='tecnico' por email para vincular al Tecnico."""
+    if not email:
+        return None
+    from app.acceso_registro.models import User
+    res = await db.execute(
+        select(User).where(User.email == email.strip().lower(), User.role == "tecnico")
+    )
+    user = res.scalar_one_or_none()
+    return user.id if user else None
+
+
 async def registrar_tecnico(taller_id: int, data: TecnicoCreate, db: AsyncSession) -> Tecnico:
+    usuario_id = await _resolver_usuario_id(data.email, db)
     tecnico = Tecnico(
         taller_id=taller_id,
         nombre=data.nombre,
         especialidad=data.especialidad,
         telefono=data.telefono,
+        usuario_id=usuario_id,
     )
     db.add(tecnico)
     await db.commit()
@@ -79,6 +93,8 @@ async def actualizar_tecnico(
     if data.especialidad is not None: tecnico.especialidad = data.especialidad.strip()
     if data.telefono is not None:     tecnico.telefono     = data.telefono
     if data.estado is not None:       tecnico.estado       = data.estado
+    if data.email is not None:
+        tecnico.usuario_id = await _resolver_usuario_id(data.email, db)
 
     await db.commit()
     await db.refresh(tecnico)

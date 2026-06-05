@@ -127,6 +127,7 @@ async def crear_vehiculo(data: VehiculoCreate, user: User, db: AsyncSession) -> 
         modelo=data.modelo,
         anio=data.anio,
         color=data.color,
+        numero_seguro=data.numero_seguro,
     )
     db.add(vehiculo)
     await db.commit()
@@ -158,6 +159,9 @@ async def crear_taller(data: TallerCreate, user: User, db: AsyncSession) -> Tall
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Ya tienes un taller registrado")
 
+    import json as _json
+    especialidades_json = _json.dumps(data.especialidades) if data.especialidades else None
+
     taller = Taller(
         usuario_id=user.id,
         nombre=data.nombre,
@@ -166,6 +170,7 @@ async def crear_taller(data: TallerCreate, user: User, db: AsyncSession) -> Tall
         email_comercial=data.email_comercial,
         latitud=data.latitud,
         longitud=data.longitud,
+        especialidades=especialidades_json,
     )
     db.add(taller)
     user.role = "taller"

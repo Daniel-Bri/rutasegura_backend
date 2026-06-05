@@ -151,6 +151,23 @@ async def actualizar_estado_asignacion(
                 inc.usuario_id, titulo, notif_msg, db,
                 {"tipo": "estado", "estado": data.estado, "asignacion_id": str(asignacion_id)},
             )
+
+            if data.estado == "finalizado":
+                from app.cotizacion_pagos.models import Cotizacion
+                cot_r = await db.execute(
+                    select(Cotizacion).where(
+                        Cotizacion.incidente_id == asignacion.incidente_id,
+                        Cotizacion.estado == "aceptada",
+                    )
+                )
+                cot = cot_r.scalar_one_or_none()
+                if cot:
+                    await notify(inc.usuario_id, "solicitud_pago", {
+                        "cotizacion_id": cot.id,
+                        "monto": cot.monto_estimado,
+                        "incidente_id": asignacion.incidente_id,
+                        "asignacion_id": asignacion_id,
+                    })
     except Exception:
         pass
 
@@ -210,6 +227,72 @@ async def asignar_tecnico(
     taller = await service.get_taller_by_user(current_user.id, db)
     asignacion = await service.asignar_tecnico_a_solicitud(asignacion_id, taller.id, data.tecnico_id, db)
     return schemas.AsignacionResponse.model_validate(asignacion)
+
+
+# ── CU nuevo · Registrar cobro por visita ────────────────
+@router.post("/asignaciones/{asignacion_id}/cobro-visita")
+async def registrar_cobro_visita(
+    asignacion_id: int,
+    data: schemas.CobroVisitaCreate,
+    current_user: User = Depends(require_role("taller", "tecnico")),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.talleres_tecnicos.models import CobroVisita, Tecnico
+    from sqlalchemy import select as _sel
+
+    # Verificar que la asignación existe y pertenece al taller
+    asig_r = await db.execute(_sel(Asignacion).where(Asignacion.id == asignacion_id))
+    asig = asig_r.scalar_one_or_none()
+    if not asig:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Asignación no encontrada")
+
+    if current_user.role == "taller":
+        taller = await service.get_taller_by_user(current_user.id, db)
+        if asig.taller_id != taller.id:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="No tienes acceso a esta asignación")
+        tecnico_id = None
+    else:
+        tec_r = await db.execute(_sel(Tecnico).where(Tecnico.usuario_id == current_user.id))
+        tec = tec_r.scalar_one_or_none()
+        tecnico_id = tec.id if tec else None
+
+    # No puede haber ya un cobro
+    existing = await db.execute(_sel(CobroVisita).where(CobroVisita.asignacion_id == asignacion_id))
+    if existing.scalar_one_or_none():
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Ya existe un cobro por visita para esta asignación")
+
+    cobro = CobroVisita(
+        asignacion_id=asignacion_id,
+        tecnico_id=tecnico_id,
+        monto=data.monto,
+        concepto=data.concepto or "Cobro por desplazamiento al sitio",
+    )
+    db.add(cobro)
+
+    # Notificar al cliente
+    try:
+        from app.emergencias.models import Incidente
+        from app.notificaciones.service import notificar_usuario
+        inc_r = await db.execute(_sel(Incidente).where(Incidente.id == asig.incidente_id))
+        inc = inc_r.scalar_one_or_none()
+        if inc:
+            await notificar_usuario(
+                inc.usuario_id,
+                "💰 Cobro por visita registrado",
+                f"El taller registró un cobro por visita de Bs. {data.monto:.2f}. {data.concepto or ''}",
+                db,
+                {"tipo": "cobro_visita", "asignacion_id": str(asignacion_id)},
+            )
+    except Exception:
+        pass
+
+    await db.commit()
+    await db.refresh(cobro)
+    return {"id": cobro.id, "asignacion_id": cobro.asignacion_id,
+            "monto": cobro.monto, "concepto": cobro.concepto, "created_at": cobro.created_at}
 
 
 # ── CU31 · Confirmar llegada del técnico (cliente) ─────────

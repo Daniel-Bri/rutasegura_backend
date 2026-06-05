@@ -15,6 +15,31 @@ from app.reportes import schemas, service
 router = APIRouter()
 
 
+# ── CU41 · KPIs operacionales ─────────────────────────────
+@router.get("/kpis")
+async def kpis_operacionales(
+    desde: Optional[datetime] = Query(None),
+    hasta: Optional[datetime] = Query(None),
+    tenant_id: Optional[int] = Query(None),
+    current_user: User = Depends(require_role("admin", "taller")),
+    db: AsyncSession = Depends(get_db),
+):
+    taller_id_filtro = None
+    if current_user.role == "taller":
+        from app.talleres_tecnicos.service import get_taller_by_user
+        taller = await get_taller_by_user(current_user.id, db)
+        taller_id_filtro = taller.id
+        tenant_id = None  # el taller no filtra por tenant, solo ve los suyos
+
+    return await service.obtener_kpis(
+        db=db,
+        desde=desde,
+        hasta=hasta,
+        tenant_id=tenant_id,
+        taller_id_filtro=taller_id_filtro,
+    )
+
+
 # ── CU32 - Recordatorios de mantenimiento ─────────────────
 @router.get("/mantenimiento")
 async def recordatorios_mantenimiento(

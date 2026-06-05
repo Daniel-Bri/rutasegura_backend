@@ -75,8 +75,82 @@ async def crear_incidente(
     )
     db.add(incidente)
     await db.commit()
-    await db.flush()
+
+    # Re-fetch antes de invitar para evitar atributos expirados post-commit
+    incidente_refetched = await _refetch(incidente.id, db)
+
+    try:
+        await _invitar_talleres(incidente_refetched, db)
+    except Exception as e:
+        logger.warning(f"[invitar_talleres] Fallo en creación: {e}")
+
     return await _refetch(incidente.id, db)
+
+
+async def _invitar_talleres(incidente: Incidente, db: AsyncSession) -> None:
+    """Busca los 3 mejores talleres y crea asignaciones en estado 'invitado'."""
+    from app.ia.motor_asignacion import seleccionar_top3
+    from app.talleres_tecnicos.models import Asignacion
+
+    talleres_res = await db.execute(select(Taller).where(Taller.estado == "aprobado"))
+    talleres = list(talleres_res.scalars().all())
+
+    if not talleres:
+        logger.warning(f"[invitar_talleres] Incidente #{incidente.id}: no hay talleres aprobados en el sistema")
+        return
+
+    seleccionados = seleccionar_top3(
+        talleres,
+        inc_lat=float(incidente.latitud) if incidente.latitud else None,
+        inc_lon=float(incidente.longitud) if incidente.longitud else None,
+        prioridad=incidente.prioridad or "media",
+        tipo_incidente=incidente.tipo_incidente,
+    )
+
+    if not seleccionados:
+        logger.warning(f"[invitar_talleres] Incidente #{incidente.id}: motor no encontró talleres candidatos")
+        return
+
+    for taller, score, dist in seleccionados:
+        from math import ceil
+        from app.ia.motor_asignacion import haversine
+        eta = None
+        if taller.latitud and taller.longitud and incidente.latitud and incidente.longitud:
+            dist_km = haversine(taller.latitud, taller.longitud,
+                                float(incidente.latitud), float(incidente.longitud))
+            eta = max(5, ceil(dist_km / 30 * 60))
+
+        asig = Asignacion(
+            incidente_id=incidente.id,
+            taller_id=taller.id,
+            estado="invitado",
+            eta=eta,
+        )
+        db.add(asig)
+
+    incidente.estado = "en_proceso"
+    await db.commit()
+
+    # Notificar a los talleres invitados
+    try:
+        from app.comunicacion.websocket import notify
+        from app.notificaciones.service import notificar_usuario
+        for taller, _, _ in seleccionados:
+            await notificar_usuario(
+                taller.usuario_id,
+                "🚨 Nueva solicitud de emergencia",
+                f"Tienes una nueva solicitud de emergencia asignada. Envía tu cotización para aceptarla.",
+                db,
+                {"tipo": "nueva_solicitud_invitado", "incidente_id": str(incidente.id)},
+            )
+            await notify(taller.usuario_id, "notificacion", {
+                "titulo": "🚨 Nueva solicitud",
+                "mensaje": "Tienes una nueva solicitud de emergencia. Envía tu cotización.",
+                "tipo": "nueva_solicitud_invitado",
+                "referencia_id": incidente.id,
+            })
+    except Exception:
+        pass
 
 
 # ── CU30 ─────────────────────────────────────────────────────────────────────
@@ -110,7 +184,13 @@ async def crear_incidente_sos(
     )
     db.add(incidente)
     await db.commit()
-    await db.flush()
+
+    incidente_refetched = await _refetch(incidente.id, db)
+    try:
+        await _invitar_talleres(incidente_refetched, db)
+    except Exception as e:
+        logger.warning(f"[invitar_talleres SOS] Fallo: {e}")
+
     return await _refetch(incidente.id, db)
 
 
@@ -119,10 +199,27 @@ async def crear_incidente_sos(
 async def actualizar_ubicacion(
     incidente_id: int, usuario_id: int, data: UbicacionUpdate, db: AsyncSession
 ) -> Incidente:
+    from app.talleres_tecnicos.models import Asignacion
     incidente = await _get_incidente_usuario(incidente_id, usuario_id, db)
     incidente.latitud  = data.latitud
     incidente.longitud = data.longitud
     await db.commit()
+
+    # Re-intentar invitación ahora que tenemos GPS (si aún no hay talleres invitados)
+    try:
+        asig_res = await db.execute(
+            select(Asignacion).where(
+                Asignacion.incidente_id == incidente_id,
+                Asignacion.estado == "invitado",
+            )
+        )
+        ya_invitados = list(asig_res.scalars().all())
+        if not ya_invitados:
+            inc = await _refetch(incidente_id, db)
+            await _invitar_talleres(inc, db)
+    except Exception as e:
+        logger.warning(f"[actualizar_ubicacion] Re-invitación fallida: {e}")
+
     return await _refetch(incidente.id, db)
 
 
@@ -286,9 +383,14 @@ async def listar_mis_solicitudes(usuario_id: int, db: AsyncSession) -> list[dict
     rows = []
     for inc in incidentes:
         asig_res = await db.execute(
-            select(Asignacion).where(Asignacion.incidente_id == inc.id)
+            select(Asignacion)
+            .where(Asignacion.incidente_id == inc.id)
+            .order_by(Asignacion.created_at.desc())
         )
-        asig = asig_res.scalar_one_or_none()
+        # Un incidente puede tener varias asignaciones (rechazadas + activa).
+        # Tomamos la más reciente no-cancelada; si todas están canceladas, la más reciente.
+        all_asigs = list(asig_res.scalars().all())
+        asig = next((a for a in all_asigs if a.estado != "cancelado"), None) or (all_asigs[0] if all_asigs else None)
 
         asig_data = None
         if asig:

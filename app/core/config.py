@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     SMTP_USER: Optional[str] = None
     SMTP_PASSWORD: Optional[str] = None
     SMTP_FROM: Optional[str] = None
+    STRIPE_SECRET_KEY: str = ""
 
     @property
     def async_database_url(self) -> str:
