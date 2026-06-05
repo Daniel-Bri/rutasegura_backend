@@ -344,19 +344,29 @@ async def seed():
         ]
         incidentes: list[Incidente] = []
         for inc_data in INCIDENTES:
-            inc = Incidente(
-                usuario_id=users[inc_data["usuario"]].id,
-                vehiculo_id=vehiculos[inc_data["placa"]].id,
-                latitud=inc_data["lat"],
-                longitud=inc_data["lon"],
-                descripcion=inc_data["descripcion"],
-                estado=inc_data["estado"],
-                prioridad=inc_data["prioridad"],
+            result = await db.execute(
+                select(Incidente).where(
+                    Incidente.usuario_id == users[inc_data["usuario"]].id,
+                    Incidente.descripcion == inc_data["descripcion"],
+                )
             )
-            db.add(inc)
-            await db.flush()
+            inc = result.scalar_one_or_none()
+            if inc:
+                print(f"  [skip] Incidente ya existe — {inc_data['descripcion'][:55]}...")
+            else:
+                inc = Incidente(
+                    usuario_id=users[inc_data["usuario"]].id,
+                    vehiculo_id=vehiculos[inc_data["placa"]].id,
+                    latitud=inc_data["lat"],
+                    longitud=inc_data["lon"],
+                    descripcion=inc_data["descripcion"],
+                    estado=inc_data["estado"],
+                    prioridad=inc_data["prioridad"],
+                )
+                db.add(inc)
+                await db.flush()
+                print(f"  [ok]   Incidente #{inc.id} ({inc_data['prioridad']}) — {inc_data['descripcion'][:55]}...")
             incidentes.append(inc)
-            print(f"  [ok]   Incidente #{inc.id} ({inc_data['prioridad']}) — {inc_data['descripcion'][:55]}...")
         await db.commit()
         for inc in incidentes:
             await db.refresh(inc)
@@ -380,20 +390,30 @@ async def seed():
         ]
         asignaciones: list[Asignacion] = []
         for a in ASIGNACIONES:
-            asig = Asignacion(
-                incidente_id=a["incidente"].id,
-                taller_id=a["taller"].id,
-                tecnico_id=a["tecnico"].id if a["tecnico"] else None,
-                estado=a["estado"],
-                eta=a["eta"],
-                observacion=a["obs"],
+            result = await db.execute(
+                select(Asignacion).where(
+                    Asignacion.incidente_id == a["incidente"].id,
+                    Asignacion.taller_id == a["taller"].id,
+                )
             )
-            db.add(asig)
-            await db.flush()
-            asignaciones.append(asig)
-            tec_nombre  = a["tecnico"].nombre if a["tecnico"] else "Sin técnico"
+            asig = result.scalar_one_or_none()
+            tec_nombre = a["tecnico"].nombre if a["tecnico"] else "Sin técnico"
             taller_nombre = a["taller"].nombre
-            print(f"  [ok]   Asignación #{asig.id} ({a['estado']}) · {taller_nombre} · {tec_nombre}")
+            if asig:
+                print(f"  [skip] Asignación #{asig.id} ya existe — {taller_nombre} · {tec_nombre}")
+            else:
+                asig = Asignacion(
+                    incidente_id=a["incidente"].id,
+                    taller_id=a["taller"].id,
+                    tecnico_id=a["tecnico"].id if a["tecnico"] else None,
+                    estado=a["estado"],
+                    eta=a["eta"],
+                    observacion=a["obs"],
+                )
+                db.add(asig)
+                await db.flush()
+                print(f"  [ok]   Asignación #{asig.id} ({a['estado']}) · {taller_nombre} · {tec_nombre}")
+            asignaciones.append(asig)
         await db.commit()
         for asig in asignaciones:
             await db.refresh(asig)

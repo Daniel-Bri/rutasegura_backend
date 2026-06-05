@@ -2,6 +2,7 @@ import math
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Request, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi import HTTPException
@@ -236,22 +237,51 @@ async def listar_talleres(
     db: AsyncSession = Depends(get_db),
 ):
     talleres = await service.listar_talleres(estado, db)
-    return [TallerResponse.model_validate(t) for t in talleres]
+    # Poblar tenant_nombre
+    tenant_ids = {t.tenant_id for t in talleres if t.tenant_id}
+    tenants_map: dict[int, str] = {}
+    if tenant_ids:
+        from app.acceso_registro.models import Tenant
+        ten_res = await db.execute(select(Tenant).where(Tenant.id.in_(tenant_ids)))
+        for ten in ten_res.scalars().all():
+            tenants_map[ten.id] = ten.nombre
+    result = []
+    for t in talleres:
+        r = TallerResponse.model_validate(t)
+        r.tenant_nombre = tenants_map.get(t.tenant_id) if t.tenant_id else None
+        result.append(r)
+    return result
+
+
+class AprobarPayload(BaseModel):
+    tenant_id: Optional[int] = None
 
 
 @router.patch("/talleres/{taller_id}/aprobar", response_model=TallerResponse)
 async def aprobar_taller(
     taller_id: int,
     request: Request,
+    body: AprobarPayload = AprobarPayload(),
     current_user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ):
     taller = await service.cambiar_estado_taller(taller_id, "aprobado", db)
+    # Asignar tenant si se especificó
+    if body.tenant_id is not None:
+        taller.tenant_id = body.tenant_id
+        await db.commit()
+        await db.refresh(taller)
     from app.reportes.service import log_evento
     await log_evento(db, accion="approve_taller", usuario_id=current_user.id,
                      usuario_nombre=current_user.username, entidad="Taller", entidad_id=taller_id,
                      ip=request.client.host if request.client else None)
-    return TallerResponse.model_validate(taller)
+    r = TallerResponse.model_validate(taller)
+    if taller.tenant_id:
+        from app.acceso_registro.models import Tenant
+        ten_res = await db.execute(select(Tenant).where(Tenant.id == taller.tenant_id))
+        ten = ten_res.scalar_one_or_none()
+        r.tenant_nombre = ten.nombre if ten else None
+    return r
 
 
 @router.patch("/talleres/{taller_id}/rechazar", response_model=TallerResponse)

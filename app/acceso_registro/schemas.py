@@ -195,7 +195,9 @@ class TallerResponse(BaseModel):
     disponible: bool
     estado: str
     rating: float
-    especialidades: Optional[str] = None   # JSON string
+    especialidades: Optional[str] = None
+    tenant_id: Optional[int] = None
+    tenant_nombre: Optional[str] = None   # poblado en endpoints admin
     created_at: datetime
 
     model_config = {"from_attributes": True}
