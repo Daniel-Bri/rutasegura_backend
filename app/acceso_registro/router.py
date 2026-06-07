@@ -1,4 +1,4 @@
-import math
+﻿import math
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -193,7 +193,7 @@ async def actualizar_usuario(
     user = await service.actualizar_usuario(user_id, data, current_user.id, db)
     from app.reportes.service import log_evento
     await log_evento(db, accion="update_user", usuario_id=current_user.id,
-                     usuario_nombre=current_user.username, entidad="User", entidad_id=user_id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="User", entidad_id=user_id,
                      detalle={"antes": before_data, "despues": data.model_dump(exclude_none=True)},
                      ip=request.client.host if request.client else None)
     return UserResponse.model_validate(user)
@@ -209,7 +209,7 @@ async def activar_usuario(
     user = await service.toggle_usuario_activo(user_id, True, current_user.id, db)
     from app.reportes.service import log_evento
     await log_evento(db, accion="activate_user", usuario_id=current_user.id,
-                     usuario_nombre=current_user.username, entidad="User", entidad_id=user_id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="User", entidad_id=user_id,
                      ip=request.client.host if request.client else None)
     return UserResponse.model_validate(user)
 
@@ -224,7 +224,7 @@ async def desactivar_usuario(
     user = await service.toggle_usuario_activo(user_id, False, current_user.id, db)
     from app.reportes.service import log_evento
     await log_evento(db, accion="deactivate_user", usuario_id=current_user.id,
-                     usuario_nombre=current_user.username, entidad="User", entidad_id=user_id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="User", entidad_id=user_id,
                      ip=request.client.host if request.client else None)
     return UserResponse.model_validate(user)
 
@@ -273,7 +273,7 @@ async def aprobar_taller(
         await db.refresh(taller)
     from app.reportes.service import log_evento
     await log_evento(db, accion="approve_taller", usuario_id=current_user.id,
-                     usuario_nombre=current_user.username, entidad="Taller", entidad_id=taller_id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="Taller", entidad_id=taller_id,
                      ip=request.client.host if request.client else None)
     r = TallerResponse.model_validate(taller)
     if taller.tenant_id:
@@ -294,7 +294,7 @@ async def rechazar_taller(
     taller = await service.cambiar_estado_taller(taller_id, "rechazado", db)
     from app.reportes.service import log_evento
     await log_evento(db, accion="reject_taller", usuario_id=current_user.id,
-                     usuario_nombre=current_user.username, entidad="Taller", entidad_id=taller_id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="Taller", entidad_id=taller_id,
                      ip=request.client.host if request.client else None)
     return TallerResponse.model_validate(taller)
 

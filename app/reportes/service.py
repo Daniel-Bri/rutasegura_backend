@@ -305,7 +305,7 @@ async def obtener_metricas(
 ) -> dict:
     from app.cotizacion_pagos.models import Cotizacion, Pago
     from app.talleres_tecnicos.models import Asignacion
-    from app.reportes.models import CalificacionServicio
+    from app.reportes.models import Calificacion
 
     pago_filters = []
     asig_filters = []
@@ -314,15 +314,15 @@ async def obtener_metricas(
     if taller_id is not None:
         pago_filters.append(Cotizacion.taller_id == taller_id)
         asig_filters.append(Asignacion.taller_id == taller_id)
-        cal_filters.append(CalificacionServicio.taller_id == taller_id)
+        cal_filters.append(Calificacion.taller_id == taller_id)
     if desde:
         pago_filters.append(Pago.created_at >= desde)
         asig_filters.append(Asignacion.created_at >= desde)
-        cal_filters.append(CalificacionServicio.created_at >= desde)
+        cal_filters.append(Calificacion.created_at >= desde)
     if hasta:
         pago_filters.append(Pago.created_at <= hasta)
         asig_filters.append(Asignacion.created_at <= hasta)
-        cal_filters.append(CalificacionServicio.created_at <= hasta)
+        cal_filters.append(Calificacion.created_at <= hasta)
 
     pagos_q = (
         select(Pago.id, Pago.monto, Pago.metodo, Pago.created_at, Pago.cotizacion_id, Cotizacion.incidente_id)
@@ -344,7 +344,7 @@ async def obtener_metricas(
         finalizados_q = finalizados_q.where(and_(*asig_filters))
     servicios_finalizados = (await db.execute(finalizados_q)).scalar_one()
 
-    cal_q = select(func.avg(CalificacionServicio.puntuacion), func.count(CalificacionServicio.id))
+    cal_q = select(func.avg(Calificacion.puntuacion), func.count(Calificacion.id))
     if cal_filters:
         cal_q = cal_q.where(and_(*cal_filters))
     avg_cal, total_cal = (await db.execute(cal_q)).first()

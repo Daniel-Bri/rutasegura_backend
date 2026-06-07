@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from typing import Optional
 
@@ -22,6 +22,32 @@ class CalificacionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CalificacionAdminResponse(BaseModel):
+    id: int
+    asignacion_id: int
+    cliente_id: int
+    taller_id: int
+    puntuacion: int
+    comentario: Optional[str]
+    estado: str
+    created_at: datetime
+    taller_nombre: Optional[str] = None
+    cliente_nombre: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class CalificacionEstadoUpdate(BaseModel):
+    estado: str
+
+    @field_validator("estado")
+    @classmethod
+    def estado_valido(cls, v: str) -> str:
+        if v not in ("activa", "eliminada"):
+            raise ValueError("Estado debe ser 'activa' o 'eliminada'")
+        return v
+
+
 class BitacoraEventoResponse(BaseModel):
     id: int
     usuario_id: Optional[int]
@@ -42,24 +68,6 @@ class AuditoriaListResponse(BaseModel):
     page: int
     size: int
     pages: int
-
-
-class CalificacionCreate(BaseModel):
-    asignacion_id: int
-    puntuacion: int
-    resena: Optional[str] = None
-
-
-class CalificacionResponse(BaseModel):
-    id: int
-    asignacion_id: int
-    cliente_id: int
-    taller_id: int
-    puntuacion: int
-    resena: Optional[str]
-    created_at: datetime
-
-    model_config = {"from_attributes": True}
 
 
 class CalificacionPendienteItem(BaseModel):

@@ -70,6 +70,7 @@ async def generar_cotizacion(taller_id: int, data: CotizacionCreate, db: AsyncSe
         taller_id=taller_id,
         monto_estimado=round(monto_total, 2),
         detalle=detalle_json,
+        tiempo_estimado_horas=data.tiempo_estimado_horas,
     )
     db.add(cotizacion)
     await db.commit()

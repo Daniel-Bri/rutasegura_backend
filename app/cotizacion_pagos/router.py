@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status
+﻿from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,6 +50,13 @@ async def generar_cotizacion(
     except Exception:
         pass
 
+    from app.reportes.service import log_evento
+    await log_evento(db, accion="generar_cotizacion", usuario_id=current_user.id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="cotizacion",
+                     entidad_id=cotizacion.id,
+                     detalle={"incidente_id": cotizacion.incidente_id,
+                              "monto": float(cotizacion.monto_estimado or 0),
+                              "tiempo_estimado_horas": data.tiempo_estimado_horas})
     return schemas.CotizacionResponse.model_validate(cotizacion)
 
 
@@ -65,15 +72,22 @@ async def listar_cotizaciones(
     return [schemas.CotizacionResponse.model_validate(c) for c in cotizaciones]
 
 
-# ── CU20 · Mis cotizaciones (cliente) ─────────────────────
+# ── CU20 · Mis cotizaciones (cliente) — enriquecido CU39/CU43 ─
 @router.get("/mis-cotizaciones", response_model=list[schemas.CotizacionResponse])
 async def mis_cotizaciones(
     current_user: User = Depends(require_role("cliente")),
     db: AsyncSession = Depends(get_db),
 ):
     from app.talleres_tecnicos.models import Asignacion
+    from app.acceso_registro.models import Taller
     cotizaciones = await service.listar_mis_cotizaciones(current_user.id, db)
-    # Adjuntar estado_asignacion para que el cliente sepa si el servicio ya terminó
+
+    taller_ids = list({c.taller_id for c in cotizaciones})
+    talleres_map: dict[int, Taller] = {}
+    if taller_ids:
+        tal_res = await db.execute(select(Taller).where(Taller.id.in_(taller_ids)))
+        talleres_map = {t.id: t for t in tal_res.scalars().all()}
+
     result = []
     for c in cotizaciones:
         asig_res = await db.execute(
@@ -83,8 +97,11 @@ async def mis_cotizaciones(
             .order_by(Asignacion.created_at.desc())
         )
         asig = asig_res.scalars().first()
+        taller = talleres_map.get(c.taller_id)
         r = schemas.CotizacionResponse.model_validate(c)
         r.estado_asignacion = asig.estado if asig else None
+        r.taller_nombre = taller.nombre if taller else None
+        r.taller_rating = taller.rating if taller else None
         result.append(r)
     return result
 
@@ -109,6 +126,11 @@ async def actualizar_estado_cotizacion(
     db: AsyncSession = Depends(get_db),
 ):
     cotizacion = await service.actualizar_estado(cotizacion_id, data.estado, db)
+    from app.reportes.service import log_evento
+    await log_evento(db, accion=f"cotizacion_{data.estado}", usuario_id=current_user.id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="cotizacion",
+                     entidad_id=cotizacion_id,
+                     detalle={"nuevo_estado": data.estado, "incidente_id": cotizacion.incidente_id})
     return schemas.CotizacionResponse.model_validate(cotizacion)
 
 
@@ -120,6 +142,12 @@ async def realizar_pago(
     db: AsyncSession = Depends(get_db),
 ):
     pago = await service.realizar_pago(current_user.id, data, db)
+    from app.reportes.service import log_evento
+    await log_evento(db, accion="realizar_pago", usuario_id=current_user.id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="pago",
+                     entidad_id=pago.id,
+                     detalle={"cotizacion_id": data.cotizacion_id,
+                              "monto": float(pago.monto), "metodo": pago.metodo})
     return schemas.PagoResponse.model_validate(pago)
 
 
@@ -179,4 +207,11 @@ async def confirmar_stripe(
     pago = await service.confirmar_pago_stripe(
         current_user.id, data.cotizacion_id, data.payment_intent_id, db
     )
+    from app.reportes.service import log_evento
+    await log_evento(db, accion="pago_stripe_confirmado", usuario_id=current_user.id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="pago",
+                     entidad_id=pago.id,
+                     detalle={"cotizacion_id": data.cotizacion_id,
+                              "payment_intent_id": data.payment_intent_id,
+                              "monto": float(pago.monto)})
     return schemas.PagoResponse.model_validate(pago)

@@ -26,6 +26,7 @@ class ItemCotizacion(BaseModel):
 class CotizacionCreate(BaseModel):
     incidente_id: int
     items: list[ItemCotizacion]
+    tiempo_estimado_horas: Optional[float] = None
 
     @field_validator("items")
     @classmethod
@@ -63,6 +64,9 @@ class CotizacionResponse(BaseModel):
     detalle: Optional[str]
     estado: str
     estado_asignacion: Optional[str] = None  # poblado en mis_cotizaciones
+    tiempo_estimado_horas: Optional[float] = None
+    taller_nombre: Optional[str] = None      # poblado en mis_cotizaciones (CU39)
+    taller_rating: Optional[float] = None    # poblado en mis_cotizaciones (CU43)
     created_at: datetime
 
     model_config = {"from_attributes": True}

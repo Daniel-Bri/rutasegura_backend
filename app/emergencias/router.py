@@ -1,4 +1,4 @@
-from typing import Any, Optional
+﻿from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, UploadFile, status
 from pydantic import BaseModel
@@ -26,6 +26,11 @@ async def reportar_emergencia(
     db: AsyncSession = Depends(get_db),
 ):
     incidente = await service.crear_incidente(data, current_user.id, db)
+    from app.reportes.service import log_evento
+    await log_evento(db, accion="crear_incidente", usuario_id=current_user.id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="incidente",
+                     entidad_id=incidente.id,
+                     detalle={"prioridad": data.prioridad, "vehiculo_id": data.vehiculo_id})
     return IncidenteResponse.model_validate(incidente)
 
 
@@ -112,4 +117,9 @@ async def boton_sos(
     incidente = await service.crear_incidente_sos(
         current_user.id, data.latitud, data.longitud, db
     )
+    from app.reportes.service import log_evento
+    await log_evento(db, accion="boton_sos", usuario_id=current_user.id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="incidente",
+                     entidad_id=incidente.id,
+                     detalle={"latitud": data.latitud, "longitud": data.longitud})
     return IncidenteResponse.model_validate(incidente)

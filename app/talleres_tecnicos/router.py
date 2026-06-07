@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status
+﻿from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -171,6 +171,12 @@ async def actualizar_estado_asignacion(
     except Exception:
         pass
 
+    from app.reportes.service import log_evento
+    await log_evento(db, accion=f"asignacion_{data.estado}", usuario_id=current_user.id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="asignacion",
+                     entidad_id=asignacion_id,
+                     detalle={"nuevo_estado": data.estado,
+                              "observacion": getattr(data, "observacion", None)})
     return schemas.AsignacionResponse.model_validate(asignacion)
 
 
@@ -192,6 +198,12 @@ async def registrar_servicio(
     db: AsyncSession = Depends(get_db),
 ):
     servicio = await service.registrar_servicio_y_cerrar(current_user.id, current_user.role, data, db)
+    from app.reportes.service import log_evento
+    await log_evento(db, accion="registrar_servicio", usuario_id=current_user.id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="servicio",
+                     entidad_id=servicio.id,
+                     detalle={"asignacion_id": data.asignacion_id,
+                              "descripcion": data.descripcion_trabajo})
     return schemas.ServicioRealizadoResponse.model_validate(servicio)
 
 
@@ -226,6 +238,11 @@ async def asignar_tecnico(
 ):
     taller = await service.get_taller_by_user(current_user.id, db)
     asignacion = await service.asignar_tecnico_a_solicitud(asignacion_id, taller.id, data.tecnico_id, db)
+    from app.reportes.service import log_evento
+    await log_evento(db, accion="asignar_tecnico", usuario_id=current_user.id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="asignacion",
+                     entidad_id=asignacion_id,
+                     detalle={"tecnico_id": data.tecnico_id, "taller_id": taller.id})
     return schemas.AsignacionResponse.model_validate(asignacion)
 
 

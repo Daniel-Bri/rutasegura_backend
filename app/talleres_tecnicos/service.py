@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from fastapi import HTTPException
@@ -12,14 +13,26 @@ from app.talleres_tecnicos.schemas import (
 )
 
 
-async def get_taller_by_user(user_id: int, db: AsyncSession) -> Taller:
+async def get_taller_by_user(user_id: int, db: AsyncSession) -> SimpleNamespace:
     result = await db.execute(
-        select(Taller).where(Taller.usuario_id == user_id, Taller.estado == "aprobado")
+        select(
+            Taller.id, Taller.nombre, Taller.usuario_id, Taller.estado,
+            Taller.direccion, Taller.telefono, Taller.rating,
+            Taller.especialidades, Taller.tenant_id,
+            Taller.latitud, Taller.longitud, Taller.disponible,
+        ).where(Taller.usuario_id == user_id, Taller.estado == "aprobado")
     )
-    taller = result.scalar_one_or_none()
-    if not taller:
+    row = result.first()
+    if not row:
         raise HTTPException(status_code=403, detail="No tienes un taller aprobado")
-    return taller
+    return SimpleNamespace(
+        id=row.id, nombre=row.nombre, usuario_id=row.usuario_id,
+        estado=row.estado, direccion=row.direccion, telefono=row.telefono,
+        rating=row.rating, especialidades=row.especialidades,
+        tenant_id=row.tenant_id,
+        latitud=row.latitud, longitud=row.longitud,
+        disponible=row.disponible,
+    )
 
 
 # ── Técnicos ───────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import math
+﻿import math
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -36,6 +36,7 @@ class SolicitudDisponibleResponse(BaseModel):
     created_at: str
     es_sos: bool = False
     distancia_km: Optional[float] = None
+    eta_min: Optional[int] = None
     score_ia: float = 0.0
 
 
@@ -59,6 +60,66 @@ async def mis_asignaciones_cliente(
         .order_by(Asignacion.created_at.desc())
     )
     return [AsignacionResponse.model_validate(a) for a in result.scalars().all()]
+
+
+# ── CU39 – Talleres candidatos para un incidente (cliente) ──────────────
+@router.get("/{incidente_id}/talleres-candidatos")
+async def talleres_candidatos(
+    incidente_id: int,
+    current_user: User = Depends(require_role("cliente")),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.acceso_registro.models import Taller
+    import json as _json
+
+    # Verificar que el incidente pertenece al cliente
+    inc_res = await db.execute(
+        select(Incidente).where(Incidente.id == incidente_id, Incidente.usuario_id == current_user.id)
+    )
+    incidente = inc_res.scalar_one_or_none()
+    if not incidente:
+        raise HTTPException(status_code=404, detail="Incidente no encontrado")
+
+    # Talleres invitados para este incidente
+    asig_res = await db.execute(
+        select(Asignacion).where(Asignacion.incidente_id == incidente_id)
+    )
+    asignaciones = list(asig_res.scalars().all())
+    if not asignaciones:
+        return []
+
+    taller_ids = [a.taller_id for a in asignaciones]
+    tal_res = await db.execute(select(Taller).where(Taller.id.in_(taller_ids)))
+    talleres = {t.id: t for t in tal_res.scalars().all()}
+
+    resultado = []
+    for asig in asignaciones:
+        t = talleres.get(asig.taller_id)
+        if not t:
+            continue
+        distancia = None
+        eta_min = None
+        if all(v is not None for v in [t.latitud, t.longitud, incidente.latitud, incidente.longitud]):
+            distancia = round(haversine(t.latitud, t.longitud, incidente.latitud, incidente.longitud), 2)
+            eta_min = max(5, int(distancia / 30 * 60))
+        try:
+            especialidades = _json.loads(t.especialidades) if t.especialidades else []
+        except Exception:
+            especialidades = []
+        resultado.append({
+            "taller_id": t.id,
+            "nombre": t.nombre,
+            "direccion": t.direccion,
+            "telefono": t.telefono,
+            "rating": t.rating or 0.0,
+            "especialidades": especialidades,
+            "distancia_km": distancia,
+            "eta_min": eta_min,
+            "estado_asignacion": asig.estado,
+        })
+
+    resultado.sort(key=lambda x: (-(x["rating"] or 0), x["distancia_km"] or 999))
+    return resultado
 
 
 # ── CU13 – Ver solicitudes del taller (invitadas + activas) ─────────────
@@ -114,6 +175,9 @@ async def disponibles(
             taller.latitud, taller.longitud, taller.rating or 0.0,
             taller.disponible, i.latitud, i.longitud, i.prioridad,
         )
+        eta_min: Optional[int] = None
+        if distancia is not None:
+            eta_min = max(5, int(distancia / 30 * 60))
         tipo_problema = i.tipo_incidente or ""
         if not tipo_problema and i.descripcion:
             tipo_problema = clasificador.clasificar(i.descripcion).get("etiqueta_es", "")
@@ -131,6 +195,7 @@ async def disponibles(
             created_at=i.created_at.isoformat() if i.created_at else "",
             es_sos=(i.prioridad == "alta" and "SOS" in (i.descripcion or "")),
             distancia_km=distancia,
+            eta_min=eta_min,
             score_ia=0.0,
         ))
 
@@ -215,6 +280,11 @@ async def aceptar(
     except Exception:
         pass
 
+    from app.reportes.service import log_evento
+    await log_evento(db, accion="aceptar_solicitud", usuario_id=current_user.id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="asignacion",
+                     entidad_id=asignacion.id,
+                     detalle={"incidente_id": incidente_id, "taller_id": taller.id, "eta": eta_final})
     return AsignacionResponse(
         id=asignacion.id,
         incidente_id=asignacion.incidente_id,
@@ -376,6 +446,11 @@ async def cancelar(
     except Exception:
         pass
 
+    from app.reportes.service import log_evento
+    await log_evento(db, accion="cancelar_solicitud", usuario_id=current_user.id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="incidente",
+                     entidad_id=solicitud_id,
+                     detalle={"cobro_visita_posible": tecnico_en_sitio})
     return {
         "id": incidente.id,
         "estado": incidente.estado,
@@ -446,6 +521,11 @@ async def rechazar(
     except Exception:
         pass
 
+    from app.reportes.service import log_evento
+    await log_evento(db, accion="rechazar_solicitud", usuario_id=current_user.id,
+                     usuario_nombre=getattr(current_user, 'username', None), entidad="asignacion",
+                     entidad_id=asignacion.id,
+                     detalle={"incidente_id": solicitud_id, "taller_id": taller.id})
     return {
         "asignacion_id": asignacion.id,
         "incidente_id":  solicitud_id,
