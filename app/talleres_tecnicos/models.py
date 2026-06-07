@@ -34,6 +34,7 @@ class Asignacion(Base):
     estado       = Column(String(20), default="aceptado")
     eta          = Column(Integer, nullable=True)
     observacion  = Column(String(500), nullable=True)
+    fecha_llegada = Column(DateTime(timezone=True), nullable=True)
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -82,6 +82,11 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS tiempo_estimado_horas DOUBLE PRECISION"
         ))
 
+        # CU41 KPIs – Timestamp de llegada del técnico al sitio
+        await conn.execute(text(
+            "ALTER TABLE asignaciones ADD COLUMN IF NOT EXISTS fecha_llegada TIMESTAMP WITH TIME ZONE"
+        ))
+
     # CU42 – Crear tenant "default" si no existe
     async with AsyncSessionLocal() as session:
         from sqlalchemy import select

@@ -421,6 +421,21 @@ async def obtener_kpis(
         q_asig_time = q_asig_time.where(and_(*asig_filters))
     avg_asig = (await db.execute(q_asig_time)).scalar_one_or_none()
 
+    # ── 2a. Tiempo promedio de llegada (asignación → llegada técnico) ──
+    q_llegada = (
+        select(func.avg(
+            func.extract('epoch', Asignacion.fecha_llegada - Asignacion.created_at) / 60
+        ))
+        .where(Asignacion.fecha_llegada.isnot(None))
+    )
+    if tenant_join_needed:
+        q_llegada = q_llegada.join(Taller, Asignacion.taller_id == Taller.id).where(Taller.tenant_id == tenant_id)
+    if taller_id_filtro:
+        q_llegada = q_llegada.where(Asignacion.taller_id == taller_id_filtro)
+    if asig_filters:
+        q_llegada = q_llegada.where(and_(*asig_filters))
+    avg_llegada = (await db.execute(q_llegada)).scalar_one_or_none()
+
     # ── 2. Tiempo promedio de servicio (aceptación → cierre) ─────────
     q_srv_time = (
         select(func.avg(
@@ -537,8 +552,9 @@ async def obtener_kpis(
     total_incidentes = (await db.execute(q_total_inc)).scalar_one()
 
     return {
-        "tiempo_promedio_asignacion_min": round(float(avg_asig or 0), 1),
-        "tiempo_promedio_servicio_min":   round(float(avg_srv or 0), 1),
+        "tiempo_promedio_asignacion_min":    round(float(avg_asig or 0), 1),
+        "tiempo_promedio_llegada_min":        round(float(avg_llegada or 0), 1),
+        "tiempo_promedio_servicio_min":       round(float(avg_srv or 0), 1),
         "total_incidentes":               int(total_incidentes),
         "total_servicios_completados":    total_srv,
         "casos_cancelados_asignacion":    int(cancelados_asig),
