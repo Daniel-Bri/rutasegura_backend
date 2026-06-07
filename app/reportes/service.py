@@ -566,3 +566,72 @@ async def obtener_kpis(
         "talleres_eficientes":            talleres_eficientes,
         "zonas_calientes":                zonas_calientes,
     }
+
+
+# ── Backup / Restore ──────────────────────────────────────
+
+# Orden de inserción respetando FK (padres antes que hijos)
+_TABLA_ORDEN = [
+    "tenants", "users", "vehiculos", "talleres", "tecnicos",
+    "incidentes", "asignaciones", "cobros_visita",
+    "cotizaciones", "pagos", "servicios_realizados",
+    "mensajes", "calificaciones", "calificaciones_servicio",
+    "notificaciones", "recordatorios", "bitacora_eventos",
+]
+
+
+async def generar_backup(db: AsyncSession) -> dict:
+    """Exporta todas las tablas conocidas a un dict serializable."""
+    from app.db.session import engine
+    backup: dict = {"_meta": {"version": "1.0", "timestamp": datetime.now(timezone.utc).isoformat()}}
+
+    async with engine.connect() as conn:
+        result = await conn.execute(text(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema='public' AND table_type='BASE TABLE'"
+        ))
+        tablas_existentes = {row[0] for row in result}
+
+        for tabla in _TABLA_ORDEN:
+            if tabla not in tablas_existentes:
+                continue
+            rows = await conn.execute(text(f"SELECT * FROM {tabla} ORDER BY id"))
+            cols = list(rows.keys())
+            backup[tabla] = [dict(zip(cols, row)) for row in rows.fetchall()]
+
+    return backup
+
+
+async def restaurar_backup(db: AsyncSession, data: dict) -> None:
+    """Restaura todas las tablas desde un dict de backup."""
+    from app.db.session import engine
+    tablas = [t for t in _TABLA_ORDEN if t in data and isinstance(data[t], list)]
+
+    async with engine.connect() as conn:
+        async with conn.begin():
+            # Limpiar en orden inverso para respetar FK
+            for tabla in reversed(tablas):
+                await conn.execute(text(f"TRUNCATE TABLE {tabla} RESTART IDENTITY CASCADE"))
+
+            # Insertar en orden directo
+            for tabla in tablas:
+                filas = data[tabla]
+                if not filas:
+                    continue
+                cols = list(filas[0].keys())
+                col_list  = ", ".join(f'"{c}"' for c in cols)
+                val_list  = ", ".join(f":{c}" for c in cols)
+                upd_list  = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in cols if c != "id")
+                stmt = text(
+                    f'INSERT INTO {tabla} ({col_list}) VALUES ({val_list}) '
+                    f'ON CONFLICT (id) DO UPDATE SET {upd_list}'
+                )
+                for fila in filas:
+                    await conn.execute(stmt, fila)
+
+            # Sincronizar secuencias para que los IDs auto no colisionen
+            for tabla in tablas:
+                await conn.execute(text(
+                    f"SELECT setval(pg_get_serial_sequence('{tabla}', 'id'), "
+                    f"COALESCE((SELECT MAX(id) FROM {tabla}), 1))"
+                ))

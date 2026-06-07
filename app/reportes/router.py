@@ -16,6 +16,43 @@ from app.reportes import schemas, service
 router = APIRouter()
 
 
+# ── Backup manual ─────────────────────────────────────────
+@router.get("/backup")
+async def descargar_backup(
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    from datetime import datetime, timezone
+    import json as _json
+    from fastapi.responses import Response as _Resp
+
+    data = await service.generar_backup(db)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"rutasegura_backup_{ts}.json"
+    content = _json.dumps(data, ensure_ascii=False, indent=2, default=str)
+    return _Resp(
+        content=content.encode("utf-8"),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ── Restore ───────────────────────────────────────────────
+@router.post("/restore")
+async def restaurar_backup(
+    payload: dict,
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    await service.restaurar_backup(db, payload)
+    await service.log_evento(
+        db, accion="restore_backup", usuario_id=current_user.id,
+        usuario_nombre=getattr(current_user, "username", None),
+        entidad="sistema", detalle={"tablas": list(payload.keys())},
+    )
+    return {"ok": True, "tablas_restauradas": list(payload.keys())}
+
+
 # ── CU41 · KPIs operacionales ─────────────────────────────
 @router.get("/kpis")
 async def kpis_operacionales(
