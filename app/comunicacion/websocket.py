@@ -6,8 +6,8 @@ import json
 import asyncio
 from typing import Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from jose import JWTError
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect # type: ignore
+from jose import JWTError # type: ignore
 
 from app.core.security import decode_token
 
