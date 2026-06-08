@@ -1,6 +1,6 @@
-﻿from fastapi import APIRouter, Depends, status
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+﻿from fastapi import APIRouter, Depends, status # type: ignore
+from sqlalchemy import select # type: ignore
+from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
 
 from app.db.session import get_db
 from app.core.dependencies import get_current_user, require_role
